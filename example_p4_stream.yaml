@@ -99,6 +99,7 @@ external_components:
 
 p4_rtsp:
   port: 554
+  web_port: 8080
   video:
     resolution: 1280x720
     fps: 25

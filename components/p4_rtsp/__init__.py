@@ -20,6 +20,7 @@ CONF_MICROPHONE = "microphone"
 CONF_SPEAKER = "speaker"
 CONF_SAMPLE_RATE = "sample_rate"
 CONF_CHANNELS = "channels"
+CONF_WEB_PORT = "web_port"
 
 p4_rtsp_ns = cg.esphome_ns.namespace("p4_rtsp")
 P4RtspStream = p4_rtsp_ns.class_("P4RtspStream", cg.Component)
@@ -59,6 +60,7 @@ CONFIG_SCHEMA = cv.All(
         {
             cv.GenerateID(): cv.declare_id(P4RtspStream),
             cv.Optional(CONF_PORT, default=554): cv.int_range(min=1, max=65535),
+            cv.Optional(CONF_WEB_PORT): cv.int_range(min=1, max=65535),
             cv.Optional(CONF_VIDEO): VIDEO_SCHEMA,
             cv.Optional(CONF_AUDIO): AUDIO_SCHEMA,
         }
@@ -83,6 +85,9 @@ async def to_code(config):
         cg.add(var.set_video_gop(video[CONF_GOP]))
         cg.add(var.set_camera_pins(video[CONF_SCCB_SDA], video[CONF_SCCB_SCL],
                                    video[CONF_XCLK_PIN], video[CONF_DATA_LANES]))
+
+    if CONF_WEB_PORT in config:
+        cg.add(var.set_web_port(config[CONF_WEB_PORT]))
 
     if CONF_AUDIO in config:
         audio = config[CONF_AUDIO]

@@ -14,6 +14,7 @@ namespace p4_rtsp {
 
 class RtspServer;
 class CameraPipeline;
+class WebTestServer;
 
 class P4RtspStream : public Component {
  public:
@@ -23,6 +24,7 @@ class P4RtspStream : public Component {
   void dump_config() override;
 
   void set_port(uint16_t port) { this->port_ = port; }
+  void set_web_port(uint16_t port) { this->web_port_ = port; }
   void set_video_enabled(bool enabled) { this->video_enabled_ = enabled; }
   void set_video_resolution(int width, int height) {
     this->video_width_ = width;
@@ -51,6 +53,7 @@ class P4RtspStream : public Component {
   void on_backchannel_audio_(const int16_t *data, size_t samples);
 
   uint16_t port_{554};
+  uint16_t web_port_{0};
   bool video_enabled_{false};
   int video_width_{1280};
   int video_height_{720};
@@ -68,6 +71,7 @@ class P4RtspStream : public Component {
 
   std::vector<uint8_t> backchannel_samples_;
   std::unique_ptr<RtspServer> server_;
+  std::unique_ptr<WebTestServer> web_;
   std::unique_ptr<CameraPipeline> camera_;
   bool server_started_{false};
   bool camera_running_{false};

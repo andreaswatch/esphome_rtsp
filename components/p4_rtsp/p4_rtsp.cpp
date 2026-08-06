@@ -5,6 +5,7 @@
 
 #include "camera_pipeline.h"
 #include "rtsp_server.h"
+#include "web_test_server.h"
 
 namespace esphome {
 namespace p4_rtsp {
@@ -21,6 +22,14 @@ void P4RtspStream::setup() {
     this->on_backchannel_audio_(data, samples);
   });
 
+  if (this->web_port_ > 0) {
+    this->web_ = std::make_unique<WebTestServer>(this->web_port_, this->audio_sample_rate_, this->audio_channels_);
+    this->web_->set_backchannel_callback([this](const int16_t *data, size_t samples) {
+      this->on_backchannel_audio_(data, samples);
+    });
+    this->web_->start();
+  }
+
   if (this->video_enabled_) {
     this->camera_ = std::make_unique<CameraPipeline>();
     this->camera_->set_config(this->video_width_, this->video_height_, this->video_fps_,
@@ -29,6 +38,9 @@ void P4RtspStream::setup() {
     this->camera_->set_frame_callback([this](const uint8_t *data, size_t len, bool keyframe,
                                              uint32_t timestamp_ms) {
       this->server_->push_video_frame(data, len, keyframe, timestamp_ms);
+      if (this->web_ != nullptr) {
+        this->web_->push_video_frame(data, len, keyframe, timestamp_ms);
+      }
     });
   }
 
@@ -42,7 +54,9 @@ void P4RtspStream::setup() {
 }
 
 void P4RtspStream::loop() {
-  if (this->server_started_ && this->server_->has_clients()) {
+  bool rtsp_active = this->server_started_ && this->server_->has_clients();
+  bool web_active = this->web_ != nullptr && this->web_->needs_streaming();
+  if (rtsp_active || web_active) {
     this->start_streaming_();
   } else if (this->camera_running_ || this->mic_started_) {
     this->stop_streaming_();
@@ -80,6 +94,9 @@ void P4RtspStream::on_audio_bytes_(const std::vector<uint8_t> &data) {
   if (this->server_ != nullptr && !data.empty()) {
     this->server_->push_audio_data(data.data(), data.size());
   }
+  if (this->web_ != nullptr && !data.empty()) {
+    this->web_->push_audio_data(data.data(), data.size());
+  }
 }
 
 void P4RtspStream::on_backchannel_audio_(const int16_t *data, size_t samples) {
@@ -98,7 +115,10 @@ void P4RtspStream::on_backchannel_audio_(const int16_t *data, size_t samples) {
 }
 
 bool P4RtspStream::has_active_stream() const {
-  return this->server_ != nullptr && this->server_->has_clients();
+  if (this->server_ != nullptr && this->server_->has_clients()) {
+    return true;
+  }
+  return this->web_ != nullptr && this->web_->needs_streaming();
 }
 
 float P4RtspStream::get_setup_priority() const { return setup_priority::AFTER_WIFI; }
@@ -106,6 +126,10 @@ float P4RtspStream::get_setup_priority() const { return setup_priority::AFTER_WI
 void P4RtspStream::dump_config() {
   ESP_LOGCONFIG(TAG, "P4RTSP Stream:");
   ESP_LOGCONFIG(TAG, "  Port: %u", this->port_);
+  ESP_LOGCONFIG(TAG, "  Web test page: %s", this->web_ != nullptr ? "enabled" : "disabled");
+  if (this->web_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "    Port: %u", this->web_port_);
+  }
   ESP_LOGCONFIG(TAG, "  Video: %s", this->video_enabled_ ? "enabled" : "disabled");
   if (this->video_enabled_) {
     ESP_LOGCONFIG(TAG, "    Resolution: %dx%d", this->video_width_, this->video_height_);
