@@ -94,7 +94,7 @@ switch:
     restore_mode: RESTORE_DEFAULT_ON
 
 external_components:
-  - source: github://andreaswatch/esphome_rtsp@main
+  - source: github://andreaswatch/esphome_rtsp@8c9636e
     components: [p4_rtsp]
 
 p4_rtsp:
