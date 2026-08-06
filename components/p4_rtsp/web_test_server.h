@@ -3,10 +3,15 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
+
+#ifdef USE_ESP32
+#include "esp_heap_caps.h"
+#endif
 
 namespace esphome {
 namespace p4_rtsp {
@@ -16,8 +21,49 @@ class WebSession;
 
 using BackchannelCallback = std::function<void(const int16_t *data, size_t samples)>;
 
+template<class T> class SpiramAllocator {
+ public:
+  using value_type = T;
+
+  constexpr SpiramAllocator() noexcept = default;
+  template<class U> constexpr SpiramAllocator(const SpiramAllocator<U> &) noexcept {}
+
+  T *allocate(std::size_t n) {
+    if (n == 0) {
+      return nullptr;
+    }
+    size_t size = n * sizeof(T);
+#ifdef USE_ESP32
+    void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ptr == nullptr) {
+      ptr = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+#else
+    void *ptr = malloc(size);
+#endif
+    return static_cast<T *>(ptr);
+  }
+
+  void deallocate(T *ptr, std::size_t) noexcept {
+#ifdef USE_ESP32
+    heap_caps_free(ptr);
+#else
+    free(ptr);
+#endif
+  }
+};
+
+template<class T, class U>
+constexpr bool operator==(const SpiramAllocator<T> &, const SpiramAllocator<U> &) noexcept {
+  return true;
+}
+template<class T, class U>
+constexpr bool operator!=(const SpiramAllocator<T> &, const SpiramAllocator<U> &) noexcept {
+  return false;
+}
+
 struct WebVideoFrame {
-  std::vector<uint8_t> data;
+  std::vector<uint8_t, SpiramAllocator<uint8_t>> data;
   bool keyframe{false};
 };
 
@@ -102,7 +148,7 @@ class WebSession {
   std::mutex video_queue_mutex_;
   std::vector<WebVideoFrame> video_queue_;
   std::mutex audio_queue_mutex_;
-  std::vector<uint8_t> audio_queue_;
+  std::vector<uint8_t, SpiramAllocator<uint8_t>> audio_queue_;
   size_t audio_queue_head_{0};
 
   std::mutex send_mutex_;

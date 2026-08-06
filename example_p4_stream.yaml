@@ -94,8 +94,9 @@ switch:
     restore_mode: RESTORE_DEFAULT_ON
 
 external_components:
-  - source: github://andreaswatch/esphome_rtsp@v0.1.0
+  - source: github://andreaswatch/esphome_rtsp@v0.1.1
     components: [p4_rtsp]
+    refresh: 0s
 
 p4_rtsp:
   port: 554

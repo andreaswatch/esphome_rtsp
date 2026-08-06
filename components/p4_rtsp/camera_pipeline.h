@@ -45,6 +45,7 @@ class CameraPipeline {
   FrameCallback frame_callback_;
 
   bool running_{false};
+  bool esp_video_initialized_{false};
   int video_fd_{-1};
   void *encoder_{nullptr};
   void *enc_buf_{nullptr};

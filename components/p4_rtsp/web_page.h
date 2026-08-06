@@ -86,7 +86,6 @@ static const char WEB_PAGE_HTML[] = R"P4WMX(<!DOCTYPE html>
       connected = true;
       setStatus('Verbunden. ' + host);
       enableButtons();
-      send('video-on');
     };
     ws.onclose = function () {
       connected = false;

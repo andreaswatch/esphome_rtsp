@@ -26,7 +26,7 @@ namespace p4_rtsp {
 static const char *const TAG = "p4_rtsp.web";
 
 static constexpr size_t MAX_VIDEO_QUEUE_FRAMES = 2;
-static constexpr size_t MAX_AUDIO_QUEUE_BYTES = 64000;
+static constexpr size_t MAX_AUDIO_QUEUE_BYTES = 16000;
 static constexpr uint16_t MAX_HTTP_HEADER_BYTES = 16384;
 
 static constexpr uint8_t WS_OP_CONT = 0x0;
@@ -610,18 +610,18 @@ void WebSession::sender_loop() {
   std::vector<uint8_t> audio_chunk;
   while (this->running_) {
     bool did_something = false;
-    WebVideoFrame frame;
+    std::unique_ptr<WebVideoFrame> frame;
     bool have_video = false;
     {
       std::lock_guard<std::mutex> lock(this->video_queue_mutex_);
       if (!this->video_queue_.empty()) {
-        frame = std::move(this->video_queue_.front());
+        frame = std::make_unique<WebVideoFrame>(std::move(this->video_queue_.front()));
         this->video_queue_.erase(this->video_queue_.begin());
         have_video = true;
       }
     }
     if (have_video) {
-      if (!this->send_ws_binary_(WS_MSG_VIDEO, frame.data.data(), frame.data.size())) {
+      if (!this->send_ws_binary_(WS_MSG_VIDEO, frame->data.data(), frame->data.size())) {
         this->close_();
         break;
       }

@@ -64,10 +64,13 @@ void P4RtspStream::loop() {
 }
 
 void P4RtspStream::start_streaming_() {
-  if (!this->camera_running_ && this->camera_ != nullptr) {
+  if (!this->camera_running_ && this->camera_ != nullptr && !this->camera_failed_) {
     if (this->camera_->start()) {
       this->camera_running_ = true;
       ESP_LOGI(TAG, "Camera pipeline started");
+    } else {
+      this->camera_failed_ = true;
+      ESP_LOGE(TAG, "Camera pipeline failed to start");
     }
   }
   if (!this->mic_started_ && this->microphone_ != nullptr) {
@@ -83,6 +86,7 @@ void P4RtspStream::stop_streaming_() {
     this->camera_running_ = false;
     ESP_LOGI(TAG, "Camera pipeline stopped");
   }
+  this->camera_failed_ = false;
   if (this->mic_started_) {
     this->microphone_->stop();
     this->mic_started_ = false;

@@ -75,6 +75,7 @@ class P4RtspStream : public Component {
   std::unique_ptr<CameraPipeline> camera_;
   bool server_started_{false};
   bool camera_running_{false};
+  bool camera_failed_{false};
   bool mic_started_{false};
 };
 

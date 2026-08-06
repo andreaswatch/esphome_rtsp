@@ -82,24 +82,27 @@ void CameraPipeline::capture_task_wrapper(void *param) {
 }
 
 bool CameraPipeline::init_camera_() {
-  esp_video_init_sccb_config_t sccb = {};
-  sccb.init_sccb = true;
-  sccb.i2c_config.port = 1;
-  sccb.i2c_config.scl_pin = this->sccb_scl_;
-  sccb.i2c_config.sda_pin = this->sccb_sda_;
-  sccb.freq = 100000;
+  if (!this->esp_video_initialized_) {
+    esp_video_init_sccb_config_t sccb = {};
+    sccb.init_sccb = true;
+    sccb.i2c_config.port = 1;
+    sccb.i2c_config.scl_pin = this->sccb_scl_;
+    sccb.i2c_config.sda_pin = this->sccb_sda_;
+    sccb.freq = 100000;
 
-  esp_video_init_csi_config_t csi = {};
-  csi.sccb_config = sccb;
-  csi.reset_pin = -1;
-  csi.pwdn_pin = -1;
+    esp_video_init_csi_config_t csi = {};
+    csi.sccb_config = sccb;
+    csi.reset_pin = -1;
+    csi.pwdn_pin = -1;
 
-  esp_video_init_config_t init_config = {};
-  init_config.csi = &csi;
-  int err = esp_video_init(&init_config);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "esp_video_init failed: %d", err);
-    return false;
+    esp_video_init_config_t init_config = {};
+    init_config.csi = &csi;
+    int err = esp_video_init(&init_config);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "esp_video_init failed: %d", err);
+      return false;
+    }
+    this->esp_video_initialized_ = true;
   }
 
   this->video_fd_ = open(VIDEO_DEVICE_PATH, O_RDWR);
@@ -159,6 +162,8 @@ void CameraPipeline::deinit_camera_() {
     this->cap_buf_ = nullptr;
   }
   if (this->video_fd_ >= 0) {
+    int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    ioctl(this->video_fd_, VIDIOC_STREAMOFF, &type);
     close(this->video_fd_);
     this->video_fd_ = -1;
   }
