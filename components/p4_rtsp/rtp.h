@@ -11,6 +11,8 @@ namespace p4_rtsp {
 
 static constexpr size_t RTP_HEADER_SIZE = 12;
 static constexpr size_t RTP_MTU_PAYLOAD = 1200;
+static constexpr uint8_t RTP_PT_PCMU = 0;
+static constexpr uint8_t RTP_PT_PCMA = 8;
 static constexpr uint8_t RTP_PT_H264 = 96;
 static constexpr uint8_t RTP_PT_L16 = 97;
 static constexpr uint32_t RTP_CLOCK_VIDEO = 90000;

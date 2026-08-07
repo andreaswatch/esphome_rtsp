@@ -1,10 +1,12 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import microphone, speaker
+from esphome.components import button, microphone, speaker
 from esphome.components.esp32 import add_idf_sdkconfig_option
 from esphome.const import CONF_ID
 
 DEPENDENCIES = ["network"]
+
+AUTO_LOAD = ["button"]
 
 CONF_PORT = "port"
 CONF_VIDEO = "video"
@@ -23,10 +25,11 @@ CONF_MICROPHONE = "microphone"
 CONF_SPEAKER = "speaker"
 CONF_SAMPLE_RATE = "sample_rate"
 CONF_CHANNELS = "channels"
-CONF_WEB_PORT = "web_port"
+CONF_TEST_TONE = "test_tone"
 
 p4_rtsp_ns = cg.esphome_ns.namespace("p4_rtsp")
 P4RtspStream = p4_rtsp_ns.class_("P4RtspStream", cg.Component)
+TestToneButton = p4_rtsp_ns.class_("TestToneButton", button.Button, cg.Component)
 
 RESOLUTIONS = {
     "320x240": (320, 240),
@@ -59,6 +62,7 @@ AUDIO_SCHEMA = cv.Schema(
         cv.Optional(CONF_SPEAKER): cv.use_id(speaker.Speaker),
         cv.Optional(CONF_SAMPLE_RATE, default=16000): cv.int_range(min=8000, max=48000),
         cv.Optional(CONF_CHANNELS, default=1): cv.one_of(1, 2),
+        cv.Optional(CONF_TEST_TONE): button.button_schema(TestToneButton),
     }
 )
 
@@ -67,7 +71,6 @@ CONFIG_SCHEMA = cv.All(
         {
             cv.GenerateID(): cv.declare_id(P4RtspStream),
             cv.Optional(CONF_PORT, default=554): cv.int_range(min=1, max=65535),
-            cv.Optional(CONF_WEB_PORT): cv.int_range(min=1, max=65535),
             cv.Optional(CONF_VIDEO): VIDEO_SCHEMA,
             cv.Optional(CONF_AUDIO): AUDIO_SCHEMA,
         }
@@ -113,9 +116,6 @@ async def to_code(config):
         ov5647_fmt = ov5647_fmt.get((width, height), "CONFIG_CAMERA_OV5647_MIPI_RAW10_1920x1080_30FPS")
         add_idf_sdkconfig_option(ov5647_fmt, True)
 
-    if CONF_WEB_PORT in config:
-        cg.add(var.set_web_port(config[CONF_WEB_PORT]))
-
     if CONF_AUDIO in config:
         audio = config[CONF_AUDIO]
         cg.add(var.set_audio_sample_rate(audio[CONF_SAMPLE_RATE]))
@@ -126,3 +126,12 @@ async def to_code(config):
         if CONF_SPEAKER in audio:
             spk = await cg.get_variable(audio[CONF_SPEAKER])
             cg.add(var.set_speaker(spk))
+        if CONF_TEST_TONE in audio:
+            if CONF_SPEAKER not in audio:
+                raise cv.Invalid(
+                    f"'{CONF_TEST_TONE}' requires the '{CONF_SPEAKER}' option in the audio section"
+                )
+            tone_cfg = audio[CONF_TEST_TONE]
+            tone = cg.new_Pvariable(tone_cfg[CONF_ID])
+            cg.add(tone.set_stream(var))
+            await button.register_button(tone, tone_cfg)

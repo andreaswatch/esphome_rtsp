@@ -14,7 +14,6 @@ namespace p4_rtsp {
 
 class RtspServer;
 class CameraPipeline;
-class WebTestServer;
 
 class P4RtspStream : public Component {
  public:
@@ -24,7 +23,6 @@ class P4RtspStream : public Component {
   void dump_config() override;
 
   void set_port(uint16_t port) { this->port_ = port; }
-  void set_web_port(uint16_t port) { this->web_port_ = port; }
   void set_video_enabled(bool enabled) { this->video_enabled_ = enabled; }
   void set_video_resolution(int width, int height) {
     this->video_width_ = width;
@@ -48,14 +46,20 @@ class P4RtspStream : public Component {
 
   bool has_active_stream() const;
 
+  // Play a short click test tone on the speaker. Stops the microphone first so
+  // it releases the shared I2S bus (mic + speaker cannot run simultaneously).
+  void play_test_tone();
+
  protected:
   void start_streaming_();
   void stop_streaming_();
   void on_audio_bytes_(const std::vector<uint8_t> &data);
   void on_backchannel_audio_(const int16_t *data, size_t samples);
+  void speaker_play_(const uint8_t *pcm, size_t len);
+  void run_speaker_sequence_();
+  static void speaker_task_wrapper(void *param);
 
   uint16_t port_{554};
-  uint16_t web_port_{0};
   bool video_enabled_{false};
   int video_width_{1280};
   int video_height_{720};
@@ -74,13 +78,19 @@ class P4RtspStream : public Component {
   int audio_channels_{1};
 
   std::vector<uint8_t> backchannel_samples_;
+  std::vector<uint8_t> speaker_audio_;
   std::unique_ptr<RtspServer> server_;
-  std::unique_ptr<WebTestServer> web_;
   std::unique_ptr<CameraPipeline> camera_;
   bool server_started_{false};
   bool camera_running_{false};
   bool camera_failed_{false};
   bool mic_started_{false};
+  // While the speaker needs the shared I2S bus, loop() must not auto-restart
+  // the always-on microphone (it would re-grab the bus during playback).
+  bool speaker_active_{false};
+  // Set while a speaker playback task is running, so play requests are dropped
+  // instead of queued while the bus is busy.
+  bool speaker_busy_{false};
   uint32_t last_version_log_ms_{0};
 };
 

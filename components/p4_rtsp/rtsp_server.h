@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "rtp.h"
-#include "web_test_server.h"  // for SpiramAllocator
+#include "spiram_allocator.h"
 
 namespace esphome {
 namespace p4_rtsp {
@@ -120,6 +120,8 @@ class RtspSession {
 
   void handle_client_();
   void handle_interleaved_(const uint8_t *header, size_t header_len);
+  int16_t mulaw_decode(uint8_t u) const;
+  int16_t alaw_decode(uint8_t a) const;
   void process_request_(const char *request, size_t len);
   void handle_request_(const std::string &method, const std::string &url,
                        const std::vector<std::pair<std::string, std::string>> &headers);

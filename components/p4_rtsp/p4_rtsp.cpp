@@ -1,11 +1,15 @@
 #include "p4_rtsp.h"
 
+#include <cmath>
+#include <vector>
+
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "camera_pipeline.h"
 #include "rtsp_server.h"
-#include "web_test_server.h"
 
 namespace esphome {
 namespace p4_rtsp {
@@ -24,26 +28,15 @@ void P4RtspStream::setup() {
     this->on_backchannel_audio_(data, samples);
   });
 
-  if (this->web_port_ > 0) {
-    this->web_ = std::make_unique<WebTestServer>(this->web_port_, this->audio_sample_rate_, this->audio_channels_);
-    this->web_->set_backchannel_callback([this](const int16_t *data, size_t samples) {
-      this->on_backchannel_audio_(data, samples);
-    });
-    this->web_->start();
-  }
-
   if (this->video_enabled_) {
     this->camera_ = std::make_unique<CameraPipeline>();
     this->camera_->set_config(this->video_width_, this->video_height_, this->video_fps_,
                               this->video_bitrate_, this->video_gop_, this->sccb_sda_, this->sccb_scl_,
                               this->xclk_pin_, this->data_lanes_, this->camera_power_down_pin_);
-    this->camera_->set_frame_callback([this](const uint8_t *data, size_t len, bool keyframe,
-                                             uint32_t timestamp_ms) {
-      this->server_->push_video_frame(data, len, keyframe, timestamp_ms);
-      if (this->web_ != nullptr) {
-        this->web_->push_video_frame(data, len, keyframe, timestamp_ms);
-      }
-    });
+    this->camera_->set_frame_callback(
+        [this](const uint8_t *data, size_t len, bool keyframe, uint32_t timestamp_ms) {
+          this->server_->push_video_frame(data, len, keyframe, timestamp_ms);
+        });
   }
 
   if (this->microphone_ != nullptr) {
@@ -70,8 +63,7 @@ void P4RtspStream::loop() {
     return;
   }
   bool rtsp_active = this->server_started_ && this->server_->has_clients();
-  bool web_active = this->web_ != nullptr && this->web_->needs_streaming();
-  if (rtsp_active || web_active) {
+  if (rtsp_active) {
     this->start_streaming_();
   } else if (this->camera_running_ || this->mic_started_) {
     this->stop_streaming_();
@@ -94,7 +86,7 @@ void P4RtspStream::start_streaming_() {
       ESP_LOGE(TAG, "Camera pipeline failed to start");
     }
   }
-  if (!this->mic_started_ && this->microphone_ != nullptr) {
+  if (!this->mic_started_ && !this->speaker_active_ && this->microphone_ != nullptr) {
     this->microphone_->start();
     this->mic_started_ = true;
     ESP_LOGI(TAG, "Microphone started");
@@ -119,9 +111,6 @@ void P4RtspStream::on_audio_bytes_(const std::vector<uint8_t> &data) {
   if (this->server_ != nullptr && !data.empty()) {
     this->server_->push_audio_data(data.data(), data.size());
   }
-  if (this->web_ != nullptr && !data.empty()) {
-    this->web_->push_audio_data(data.data(), data.size());
-  }
 }
 
 void P4RtspStream::on_backchannel_audio_(const int16_t *data, size_t samples) {
@@ -133,17 +122,130 @@ void P4RtspStream::on_backchannel_audio_(const int16_t *data, size_t samples) {
     this->backchannel_samples_[i * 2] = static_cast<uint8_t>(data[i] & 0xff);
     this->backchannel_samples_[i * 2 + 1] = static_cast<uint8_t>((data[i] >> 8) & 0xff);
   }
-  if (!this->speaker_->is_running()) {
-    this->speaker_->start();
+  this->speaker_play_(this->backchannel_samples_.data(), this->backchannel_samples_.size());
+}
+
+void P4RtspStream::speaker_task_wrapper(void *param) {
+  auto *self = static_cast<P4RtspStream *>(param);
+  self->run_speaker_sequence_();
+  self->speaker_busy_ = false;
+  vTaskDelete(nullptr);
+}
+
+void P4RtspStream::speaker_play_(const uint8_t *pcm, size_t len) {
+  if (this->speaker_ == nullptr || len == 0 || this->speaker_busy_) {
+    return;
   }
-  this->speaker_->play(this->backchannel_samples_.data(), this->backchannel_samples_.size());
+  // The bus arbitration below must not run on the ESPHome loop task: it blocks
+  // in vTaskDelay while the microphone's own loop() (which runs on the loop
+  // task) performs the async stop, so we would deadlock waiting for the mic to
+  // release the bus. Spawn a one-shot task instead (camera uses the same
+  // pattern for its slow startup).
+  this->speaker_audio_.assign(pcm, pcm + len);
+  this->speaker_busy_ = true;
+  if (xTaskCreatePinnedToCore(P4RtspStream::speaker_task_wrapper, "spk_play", 8192, this, 5, nullptr, 1) !=
+      pdPASS) {
+    ESP_LOGE(TAG, "failed to create speaker task");
+    this->speaker_busy_ = false;
+  }
+}
+
+void P4RtspStream::run_speaker_sequence_() {
+  // The microphone holds the shared I2S bus. Stop it so the speaker can start,
+  // wait for the speaker to actually run, play, then release the bus back to
+  // the microphone.
+  bool mic_was_running = this->mic_started_ && this->microphone_ != nullptr;
+  if (mic_was_running) {
+    // Suppress the always-on mic auto-restart while we own the bus, otherwise
+    // loop() restarts the microphone the moment mic_started_ turns false and it
+    // re-grabs the bus before the speaker can start.
+    this->speaker_active_ = true;
+    this->microphone_->stop();
+    this->mic_started_ = false;
+    // The mic stop is asynchronous: the I2S driver keeps holding the shared
+    // bus lock until the mic task is torn down (state == STATE_STOPPED).
+    // is_running() already turns false during STATE_STOPPING while the lock is
+    // still held, so we must poll is_stopped() (same approach as the VoIP lib).
+    for (int i = 0; i < 100 && !this->microphone_->is_stopped(); i++) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (!this->microphone_->is_stopped()) {
+      ESP_LOGE(TAG, "microphone did not release the I2S bus");
+      this->speaker_active_ = false;
+      this->mic_started_ = true;
+      this->microphone_->start();
+      return;
+    }
+  }
+
+  if (this->speaker_->is_running()) {
+    this->speaker_->stop();
+  }
+  this->speaker_->start();
+  // The speaker start is async (state machine task). Give it time to grab the
+  // now-free bus before feeding samples.
+  for (int i = 0; i < 100 && !this->speaker_->is_running(); i++) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  if (!this->speaker_->is_running()) {
+    // The speaker's internal retry loop keeps trying while state is STARTING
+    // and no task exists yet, so stop() cannot abort it. Leave the bus alone:
+    // the retry will succeed on its own once the lock is free.
+    ESP_LOGE(TAG, "speaker did not start");
+    this->speaker_active_ = false;
+    if (mic_was_running && this->microphone_ != nullptr) {
+      this->mic_started_ = true;
+      this->microphone_->start();
+    }
+    return;
+  }
+
+  this->speaker_->play(this->speaker_audio_.data(), this->speaker_audio_.size());
+  // Let the speaker drain its buffer, then wait until it fully stopped (state
+  // == STATE_STOPPED, i.e. the bus lock was released) before handing the bus
+  // back to the microphone.
+  this->speaker_->finish();
+  for (int i = 0; i < 100 && !this->speaker_->is_stopped(); i++) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  if (!this->speaker_->is_stopped()) {
+    ESP_LOGE(TAG, "speaker did not release the I2S bus");
+  }
+
+  this->speaker_active_ = false;
+  if (mic_was_running && this->microphone_ != nullptr) {
+    this->mic_started_ = true;
+    this->microphone_->start();
+    for (int i = 0; i < 100 && !this->microphone_->is_running(); i++) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+  }
+}
+
+void P4RtspStream::play_test_tone() {
+  if (this->speaker_ == nullptr) {
+    ESP_LOGE(TAG, "no speaker configured");
+    return;
+  }
+  // ~60 ms 1 kHz sine with a fast decay → short audible click.
+  const float freq_hz = 1000.0f;
+  const float duration_s = 0.06f;
+  size_t n = static_cast<size_t>(static_cast<float>(this->audio_sample_rate_) * duration_s);
+  if (n == 0) {
+    return;
+  }
+  std::vector<int16_t> samples(n);
+  for (size_t i = 0; i < n; i++) {
+    float t = static_cast<float>(i) / static_cast<float>(this->audio_sample_rate_);
+    float env = 1.0f - (t / duration_s);
+    samples[i] = static_cast<int16_t>(env * 12000.0f * std::sin(2.0f * M_PI * freq_hz * t));
+  }
+  this->speaker_play_(reinterpret_cast<const uint8_t *>(samples.data()), samples.size() * 2);
+  ESP_LOGI(TAG, "played test tone: %u samples", static_cast<unsigned>(n));
 }
 
 bool P4RtspStream::has_active_stream() const {
-  if (this->server_ != nullptr && this->server_->has_clients()) {
-    return true;
-  }
-  return this->web_ != nullptr && this->web_->needs_streaming();
+  return this->server_ != nullptr && this->server_->has_clients();
 }
 
 float P4RtspStream::get_setup_priority() const { return setup_priority::AFTER_WIFI; }
@@ -151,10 +253,6 @@ float P4RtspStream::get_setup_priority() const { return setup_priority::AFTER_WI
 void P4RtspStream::dump_config() {
   ESP_LOGCONFIG(TAG, "P4RTSP Stream:");
   ESP_LOGCONFIG(TAG, "  Port: %u", this->port_);
-  ESP_LOGCONFIG(TAG, "  Web test page: %s", this->web_ != nullptr ? "enabled" : "disabled");
-  if (this->web_ != nullptr) {
-    ESP_LOGCONFIG(TAG, "    Port: %u", this->web_port_);
-  }
   ESP_LOGCONFIG(TAG, "  Video: %s", this->video_enabled_ ? "enabled" : "disabled");
   if (this->video_enabled_) {
     ESP_LOGCONFIG(TAG, "    Resolution: %dx%d", this->video_width_, this->video_height_);

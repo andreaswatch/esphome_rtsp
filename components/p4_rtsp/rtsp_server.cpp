@@ -400,19 +400,56 @@ void RtspSession::handle_interleaved_(const uint8_t *header, size_t header_len) 
   }
   const uint8_t *rtp = header + 4;
   uint8_t pt = rtp[1] & 0x7f;
-  if (channel == this->audio_interleaved_channel_ && pt == RTP_PT_L16) {
-    size_t payload_len = plen - RTP_HEADER_SIZE;
+  if (channel != this->audio_interleaved_channel_) {
+    return;
+  }
+  const uint8_t *payload = rtp + RTP_HEADER_SIZE;
+  size_t payload_len = plen - RTP_HEADER_SIZE;
+  std::vector<int16_t> decoded;
+  if (pt == RTP_PT_L16) {
+    // L16: big-endian 16-bit PCM.
     size_t samples = payload_len / 2;
-    std::vector<int16_t> decoded(samples);
+    decoded.resize(samples);
     for (size_t i = 0; i < samples; i++) {
-      uint16_t v = static_cast<uint16_t>((rtp[RTP_HEADER_SIZE + i * 2] << 8) |
-                                         rtp[RTP_HEADER_SIZE + i * 2 + 1]);
+      uint16_t v = static_cast<uint16_t>((payload[i * 2] << 8) | payload[i * 2 + 1]);
       decoded[i] = static_cast<int16_t>(v);
     }
-    if (this->server_->backchannel_callback_) {
-      this->server_->backchannel_callback_(decoded.data(), samples);
+  } else if (pt == RTP_PT_PCMU || pt == RTP_PT_PCMA) {
+    // Frigate and most NVRs send two-way audio as G.711 (µ-law / A-law) at
+    // 8 kHz. Decode to 16-bit PCM and upsample x2 to the 16 kHz speaker.
+    bool mulaw = (pt == RTP_PT_PCMU);
+    decoded.reserve(payload_len * 2);
+    for (size_t i = 0; i < payload_len; i++) {
+      uint8_t u = payload[i];
+      int32_t s = mulaw ? static_cast<int32_t>(mulaw_decode(u)) : static_cast<int32_t>(alaw_decode(u));
+      decoded.push_back(static_cast<int16_t>(s));
+      decoded.push_back(static_cast<int16_t>(s));
     }
+  } else {
+    return;
   }
+  if (this->server_->backchannel_callback_) {
+    this->server_->backchannel_callback_(decoded.data(), decoded.size());
+  }
+}
+
+int16_t RtspSession::mulaw_decode(uint8_t u) const {
+  u = static_cast<uint8_t>(~u);
+  int32_t t = ((u & 0x0f) << 3) + 0x84;
+  t <<= (u & 0x70) >> 4;
+  return static_cast<int16_t>((u & 0x80) ? (0x84 - t) : (t - 0x84));
+}
+
+int16_t RtspSession::alaw_decode(uint8_t a) const {
+  a ^= 0x55;
+  int32_t t = (a & 0x0f) << 4;
+  int32_t seg = (a & 0x70) >> 4;
+  if (seg == 0) {
+    t += 8;
+  } else {
+    t = (t + 0x108) << (seg - 1);
+  }
+  return static_cast<int16_t>((a & 0x80) ? t : -t);
 }
 
 void RtspSession::process_request_(const char *request, size_t len) {
@@ -635,8 +672,13 @@ std::string RtspSession::build_sdp_() const {
   }
   sdp += "m=audio 0 RTP/AVP 97\r\n";
   sdp += "a=control:trackID=1\r\n";
+  sdp += "a=sendrecv\r\n";
   sdp += "a=rtpmap:97 L16/" + to_string(this->server_->audio_sample_rate()) + "/" +
          to_string(this->server_->audio_channels()) + "\r\n";
+  // G.711 alternatives so NVRs (e.g. Frigate) know they can send backchannel
+  // audio as µ-law / A-law instead of L16.
+  sdp += "a=rtpmap:0 PCMU/8000\r\n";
+  sdp += "a=rtpmap:8 PCMA/8000\r\n";
   return sdp;
 }
 
