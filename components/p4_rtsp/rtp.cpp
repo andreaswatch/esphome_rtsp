@@ -5,6 +5,9 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
+#include "esp_audio_enc.h"
+#include "esp_opus_enc.h"
+
 namespace esphome {
 namespace p4_rtsp {
 
@@ -315,6 +318,103 @@ void PCMAPacketizer::push_pcm16(const uint8_t *data, size_t len) {
     pkt[RTP_HEADER_SIZE - 1] |= 0x80;
     this->seq_++;
     this->timestamp_ += static_cast<uint32_t>(out_samples);
+    if (this->send_callback_) {
+      this->send_callback_(pkt.data(), pkt.size());
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Opus (RFC 7587) packetizer
+// ---------------------------------------------------------------------------
+
+OpusPacketizer::OpusPacketizer() { this->ssrc_ = random_uint32(); }
+
+OpusPacketizer::~OpusPacketizer() {
+  if (this->enc_ != nullptr) {
+    esp_opus_enc_close(this->enc_);
+    this->enc_ = nullptr;
+  }
+}
+
+void OpusPacketizer::set_send_callback(RtpSendCallback callback) {
+  this->send_callback_ = std::move(callback);
+}
+
+void OpusPacketizer::set_ssrc(uint32_t ssrc) { this->ssrc_ = ssrc; }
+
+void OpusPacketizer::set_payload_type(uint8_t pt) { this->payload_type_ = pt; }
+
+void OpusPacketizer::set_input_sample_rate(int rate) {
+  this->input_sample_rate_ = rate;
+}
+
+void OpusPacketizer::set_channels(int channels) { this->channels_ = channels; }
+
+bool OpusPacketizer::init_encoder_() {
+  if (this->enc_ != nullptr) {
+    return true;
+  }
+  esp_opus_enc_config_t cfg = ESP_OPUS_ENC_CONFIG_DEFAULT();
+  cfg.sample_rate = this->input_sample_rate_;
+  cfg.channel = this->channels_;
+  cfg.bits_per_sample = ESP_AUDIO_BIT16;
+  cfg.bitrate = 32000;
+  cfg.frame_duration = ESP_OPUS_ENC_FRAME_DURATION_20_MS;
+  cfg.application_mode = ESP_OPUS_ENC_APPLICATION_VOIP;
+  cfg.complexity = 2;
+  cfg.enable_fec = true;
+  cfg.enable_dtx = false;
+  cfg.enable_vbr = false;
+
+  esp_audio_err_t err = esp_opus_enc_open(&cfg, sizeof(cfg), &this->enc_);
+  if (err != ESP_AUDIO_ERR_OK || this->enc_ == nullptr) {
+    ESP_LOGE(TAG, "Opus encoder open failed: %d", err);
+    this->enc_ = nullptr;
+    return false;
+  }
+  int in_size = 0;
+  int out_size = 0;
+  if (esp_opus_enc_get_frame_size(this->enc_, &in_size, &out_size) !=
+      ESP_AUDIO_ERR_OK) {
+    esp_opus_enc_close(this->enc_);
+    this->enc_ = nullptr;
+    return false;
+  }
+  this->frame_bytes_ = static_cast<size_t>(in_size);
+  this->enc_out_buf_.resize(static_cast<size_t>(out_size));
+  ESP_LOGI(TAG, "Opus encoder ready (frame_in=%d frame_out=%d)", in_size,
+           out_size);
+  return true;
+}
+
+void OpusPacketizer::push_pcm16(const uint8_t *data, size_t len) {
+  if (!this->init_encoder_()) {
+    return;
+  }
+  this->pcm_buf_.insert(this->pcm_buf_.end(), data, data + len);
+  while (this->pcm_buf_.size() >= this->frame_bytes_) {
+    esp_audio_enc_in_frame_t in_frame;
+    in_frame.buffer = this->pcm_buf_.data();
+    in_frame.len = static_cast<uint32_t>(this->frame_bytes_);
+    esp_audio_enc_out_frame_t out_frame;
+    out_frame.buffer = this->enc_out_buf_.data();
+    out_frame.len = static_cast<uint32_t>(this->enc_out_buf_.size());
+    esp_audio_err_t err =
+        esp_opus_enc_process(this->enc_, &in_frame, &out_frame);
+    this->pcm_buf_.erase(this->pcm_buf_.begin(),
+                         this->pcm_buf_.begin() + this->frame_bytes_);
+    if (err != ESP_AUDIO_ERR_OK || out_frame.encoded_bytes == 0) {
+      ESP_LOGW(TAG, "Opus encode failed: %d", err);
+      continue;
+    }
+    std::vector<uint8_t> pkt(RTP_HEADER_SIZE + out_frame.encoded_bytes);
+    rtp_write_header(pkt.data(), true, this->payload_type_, this->seq_,
+                     this->timestamp_, this->ssrc_);
+    memcpy(pkt.data() + RTP_HEADER_SIZE, this->enc_out_buf_.data(),
+           out_frame.encoded_bytes);
+    this->seq_++;
+    this->timestamp_ += timestamp_increment_;
     if (this->send_callback_) {
       this->send_callback_(pkt.data(), pkt.size());
     }

@@ -94,5 +94,39 @@ class PCMAPacketizer {
   uint32_t timestamp_{0};
 };
 
+// Opus (RFC 7587) packetizer. Accepts raw 16-bit little-endian PCM (as
+// delivered by the I2S microphone) and emits Opus frames over RTP with a
+// 48 kHz clock. The Opus encoder comes from esp_audio_codec (prebuilt lib).
+class OpusPacketizer {
+ public:
+  OpusPacketizer();
+  ~OpusPacketizer();
+  void set_send_callback(RtpSendCallback callback);
+  void set_ssrc(uint32_t ssrc);
+  void set_payload_type(uint8_t pt);
+  void set_input_sample_rate(int rate);
+  void set_channels(int channels);
+  void push_pcm16(const uint8_t *data, size_t len);
+
+  uint16_t sequence_number() const { return this->seq_; }
+
+ protected:
+  bool init_encoder_();
+
+  RtpSendCallback send_callback_;
+  uint32_t ssrc_{0};
+  uint8_t payload_type_{RTP_PT_OPUS};
+  uint16_t seq_{0};
+  int input_sample_rate_{16000};
+  int channels_{1};
+  uint32_t timestamp_{0};
+  static constexpr uint32_t timestamp_increment_ = 960;  // 20 ms @ 48 kHz
+
+  void *enc_{nullptr};
+  size_t frame_bytes_{0};
+  std::vector<uint8_t> pcm_buf_;
+  std::vector<uint8_t> enc_out_buf_;
+};
+
 }  // namespace p4_rtsp
 }  // namespace esphome
