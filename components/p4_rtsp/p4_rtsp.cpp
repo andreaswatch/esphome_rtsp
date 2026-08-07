@@ -21,27 +21,35 @@ static const char *const COMPONENT_VERSION = "0.2.0-csi-direct";
 void P4RtspStream::setup() {
   ESP_LOGCONFIG(TAG, "Setting up P4RTSP stream");
 
-  this->server_ = std::make_unique<RtspServer>(this->port_, this->audio_sample_rate_, this->audio_channels_);
+  this->server_ = std::make_unique<RtspServer>(
+      this->port_, this->audio_sample_rate_, this->audio_channels_);
   this->server_->set_video_info(this->video_enabled_ ? this->video_width_ : 0,
-                                this->video_enabled_ ? this->video_height_ : 0, this->video_fps_);
-  this->server_->set_backchannel_callback([this](const int16_t *data, size_t samples) {
-    this->on_backchannel_audio_(data, samples);
-  });
+                                this->video_enabled_ ? this->video_height_ : 0,
+                                this->video_fps_);
+  this->server_->set_backchannel_callback(
+      [this](const int16_t *data, size_t samples) {
+        this->on_backchannel_audio_(data, samples);
+      });
 
   if (this->video_enabled_) {
     this->camera_ = std::make_unique<CameraPipeline>();
-    this->camera_->set_config(this->video_width_, this->video_height_, this->video_fps_,
-                              this->video_bitrate_, this->video_gop_, this->sccb_sda_, this->sccb_scl_,
-                              this->xclk_pin_, this->data_lanes_, this->camera_power_down_pin_);
-    this->camera_->set_frame_callback(
-        [this](const uint8_t *data, size_t len, bool keyframe, uint32_t timestamp_ms) {
-          this->server_->push_video_frame(data, len, keyframe, timestamp_ms);
-        });
+    this->camera_->set_config(this->video_width_, this->video_height_,
+                              this->video_fps_, this->video_bitrate_,
+                              this->video_gop_, this->sccb_sda_,
+                              this->sccb_scl_, this->xclk_pin_,
+                              this->data_lanes_, this->camera_power_down_pin_);
+    this->camera_->set_frame_callback([this](const uint8_t *data, size_t len,
+                                             bool keyframe,
+                                             uint32_t timestamp_ms) {
+      this->server_->push_video_frame(data, len, keyframe, timestamp_ms);
+    });
   }
 
   if (this->microphone_ != nullptr) {
     this->microphone_->add_data_callback(
-        [this](const std::vector<uint8_t> &data) { this->on_audio_bytes_(data); });
+        [this](const std::vector<uint8_t> &data) {
+          this->on_audio_bytes_(data);
+        });
   }
 
   this->server_->start();
@@ -56,7 +64,8 @@ void P4RtspStream::loop() {
   uint32_t now = millis();
   if (now - this->last_version_log_ms_ > 30000) {
     this->last_version_log_ms_ = now;
-    ESP_LOGI(TAG, "p4_rtsp component %s running (built %s %s)", COMPONENT_VERSION, __DATE__, __TIME__);
+    ESP_LOGI(TAG, "p4_rtsp component %s running (built %s %s)",
+             COMPONENT_VERSION, __DATE__, __TIME__);
   }
   if (this->video_always_on_) {
     this->start_streaming_();
@@ -71,7 +80,13 @@ void P4RtspStream::loop() {
 }
 
 void P4RtspStream::start_streaming_() {
-  if (!this->camera_running_ && this->camera_ != nullptr && !this->camera_failed_) {
+  static int call_count = 0;
+  if (++call_count <= 5 || call_count % 100 == 0) {
+    ESP_LOGI(TAG, "start_streaming call #%d: mic_started=%d speaker_active=%d mic_ptr=%p",
+             call_count, this->mic_started_, this->speaker_active_, this->microphone_);
+  }
+  if (!this->camera_running_ && this->camera_ != nullptr &&
+      !this->camera_failed_) {
     if (!this->camera_->starting() && !this->camera_->running()) {
       // Launch the (potentially slow) sensor/ISP/CSI setup in its own task so
       // loopTask never trips the watchdog.
@@ -81,12 +96,14 @@ void P4RtspStream::start_streaming_() {
       this->camera_running_ = true;
       ESP_LOGI(TAG, "Camera pipeline started");
     } else if (!this->camera_->starting()) {
-      // Start task ran and did not end in a running pipeline → permanent failure.
+      // Start task ran and did not end in a running pipeline → permanent
+      // failure.
       this->camera_failed_ = true;
       ESP_LOGE(TAG, "Camera pipeline failed to start");
     }
   }
-  if (!this->mic_started_ && !this->speaker_active_ && this->microphone_ != nullptr) {
+  if (!this->mic_started_ && !this->speaker_active_ &&
+      this->microphone_ != nullptr) {
     this->microphone_->start();
     this->mic_started_ = true;
     ESP_LOGI(TAG, "Microphone started");
@@ -120,9 +137,11 @@ void P4RtspStream::on_backchannel_audio_(const int16_t *data, size_t samples) {
   this->backchannel_samples_.resize(samples * 2);
   for (size_t i = 0; i < samples; i++) {
     this->backchannel_samples_[i * 2] = static_cast<uint8_t>(data[i] & 0xff);
-    this->backchannel_samples_[i * 2 + 1] = static_cast<uint8_t>((data[i] >> 8) & 0xff);
+    this->backchannel_samples_[i * 2 + 1] =
+        static_cast<uint8_t>((data[i] >> 8) & 0xff);
   }
-  this->speaker_play_(this->backchannel_samples_.data(), this->backchannel_samples_.size());
+  this->speaker_play_(this->backchannel_samples_.data(),
+                      this->backchannel_samples_.size());
 }
 
 void P4RtspStream::speaker_task_wrapper(void *param) {
@@ -143,8 +162,8 @@ void P4RtspStream::speaker_play_(const uint8_t *pcm, size_t len) {
   // pattern for its slow startup).
   this->speaker_audio_.assign(pcm, pcm + len);
   this->speaker_busy_ = true;
-  if (xTaskCreatePinnedToCore(P4RtspStream::speaker_task_wrapper, "spk_play", 8192, this, 5, nullptr, 1) !=
-      pdPASS) {
+  if (xTaskCreatePinnedToCore(P4RtspStream::speaker_task_wrapper, "spk_play",
+                              8192, this, 5, nullptr, 1) != pdPASS) {
     ESP_LOGE(TAG, "failed to create speaker task");
     this->speaker_busy_ = false;
   }
@@ -200,7 +219,16 @@ void P4RtspStream::run_speaker_sequence_() {
     return;
   }
 
-  this->speaker_->play(this->speaker_audio_.data(), this->speaker_audio_.size());
+  // The ES8311 DAC is muted by default after reset (REG31 bits 5/6). The
+  // ESPHome es8311 component never calls set_mute_off() on its own, and
+  // I2SAudioSpeaker::set_volume() only unmutes when explicitly invoked via
+  // speaker.volume_set. Explicitly unmute + set full volume here so the
+  // test tone / backchannel audio is actually audible.
+  this->speaker_->set_mute_state(false);
+  this->speaker_->set_volume(1.0f);
+
+  this->speaker_->play(this->speaker_audio_.data(),
+                       this->speaker_audio_.size());
   // Let the speaker drain its buffer, then wait until it fully stopped (state
   // == STATE_STOPPED, i.e. the bus lock was released) before handing the bus
   // back to the microphone.
@@ -229,18 +257,22 @@ void P4RtspStream::play_test_tone() {
   }
   // ~60 ms 1 kHz sine with a fast decay → short audible click.
   const float freq_hz = 1000.0f;
-  const float duration_s = 0.06f;
-  size_t n = static_cast<size_t>(static_cast<float>(this->audio_sample_rate_) * duration_s);
+  const float duration_s = 0.25f;
+  size_t n = static_cast<size_t>(static_cast<float>(this->audio_sample_rate_) *
+                                 duration_s);
   if (n == 0) {
     return;
   }
   std::vector<int16_t> samples(n);
   for (size_t i = 0; i < n; i++) {
-    float t = static_cast<float>(i) / static_cast<float>(this->audio_sample_rate_);
+    float t =
+        static_cast<float>(i) / static_cast<float>(this->audio_sample_rate_);
     float env = 1.0f - (t / duration_s);
-    samples[i] = static_cast<int16_t>(env * 12000.0f * std::sin(2.0f * M_PI * freq_hz * t));
+    samples[i] = static_cast<int16_t>(env * 12000.0f *
+                                      std::sin(2.0f * M_PI * freq_hz * t));
   }
-  this->speaker_play_(reinterpret_cast<const uint8_t *>(samples.data()), samples.size() * 2);
+  this->speaker_play_(reinterpret_cast<const uint8_t *>(samples.data()),
+                      samples.size() * 2);
   ESP_LOGI(TAG, "played test tone: %u samples", static_cast<unsigned>(n));
 }
 
@@ -248,22 +280,29 @@ bool P4RtspStream::has_active_stream() const {
   return this->server_ != nullptr && this->server_->has_clients();
 }
 
-float P4RtspStream::get_setup_priority() const { return setup_priority::AFTER_WIFI; }
+float P4RtspStream::get_setup_priority() const {
+  return setup_priority::AFTER_WIFI;
+}
 
 void P4RtspStream::dump_config() {
   ESP_LOGCONFIG(TAG, "P4RTSP Stream:");
   ESP_LOGCONFIG(TAG, "  Port: %u", this->port_);
-  ESP_LOGCONFIG(TAG, "  Video: %s", this->video_enabled_ ? "enabled" : "disabled");
+  ESP_LOGCONFIG(TAG, "  Video: %s",
+                this->video_enabled_ ? "enabled" : "disabled");
   if (this->video_enabled_) {
-    ESP_LOGCONFIG(TAG, "    Resolution: %dx%d", this->video_width_, this->video_height_);
+    ESP_LOGCONFIG(TAG, "    Resolution: %dx%d", this->video_width_,
+                  this->video_height_);
     ESP_LOGCONFIG(TAG, "    FPS: %d", this->video_fps_);
     ESP_LOGCONFIG(TAG, "    Bitrate: %d", this->video_bitrate_);
     ESP_LOGCONFIG(TAG, "    GOP: %d", this->video_gop_);
   }
-  ESP_LOGCONFIG(TAG, "  Audio: %d Hz, %d channel(s)", this->audio_sample_rate_, this->audio_channels_);
-  ESP_LOGCONFIG(TAG, "    Microphone: %s", this->microphone_ != nullptr ? "yes" : "no");
-  ESP_LOGCONFIG(TAG, "    Speaker: %s", this->speaker_ != nullptr ? "yes" : "no");
+  ESP_LOGCONFIG(TAG, "  Audio: %d Hz, %d channel(s)", this->audio_sample_rate_,
+                this->audio_channels_);
+  ESP_LOGCONFIG(TAG, "    Microphone: %s",
+                this->microphone_ != nullptr ? "yes" : "no");
+  ESP_LOGCONFIG(TAG, "    Speaker: %s",
+                this->speaker_ != nullptr ? "yes" : "no");
 }
 
-}  // namespace p4_rtsp
-}  // namespace esphome
+} // namespace p4_rtsp
+} // namespace esphome

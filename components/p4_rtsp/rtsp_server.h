@@ -50,6 +50,8 @@ class RtspServer {
   int video_height() const { return this->video_height_; }
   int video_fps() const { return this->video_fps_; }
   const BackchannelCallback &backchannel_callback() const { return this->backchannel_callback_; }
+  const std::vector<uint8_t> &cached_sps() const { return this->sps_pps_cache_.sps(); }
+  const std::vector<uint8_t> &cached_pps() const { return this->sps_pps_cache_.pps(); }
 
  protected:
   void accept_loop();
@@ -68,6 +70,8 @@ class RtspServer {
   std::atomic<bool> running_{false};
   mutable std::mutex sessions_mutex_;
   std::vector<std::unique_ptr<RtspSession>> sessions_;
+  H264Packetizer sps_pps_cache_;  // no send_callback — used only to extract SPS/PPS
+  mutable std::mutex sps_pps_mutex_;
   std::atomic<int> active_video_count_{0};
 
   friend class RtspSession;
@@ -127,7 +131,7 @@ class RtspSession {
                        const std::vector<std::pair<std::string, std::string>> &headers);
   void send_response_(int code, const char *reason, const char *extra_headers, const char *body,
                       size_t body_len);
-  std::string build_sdp_() const;
+  std::string build_sdp_(bool backchannel) const;
   std::string build_transport_header_(const TrackState &track) const;
   void send_track_packet_(const TrackState &track, const uint8_t *rtp, size_t len);
 

@@ -24,11 +24,12 @@ namespace p4_rtsp {
 static const char *const TAG = "p4_rtsp.server";
 
 static constexpr uint16_t MAX_AUDIO_QUEUE_BYTES = 64000;
-static constexpr size_t MAX_VIDEO_QUEUE_FRAMES = 2;
+static constexpr size_t MAX_VIDEO_QUEUE_FRAMES = 15;
 static constexpr int RTSP_TIMEOUT_MS = 60000;
 
 static std::string base64_encode(const uint8_t *data, size_t len) {
-  static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  static const char alphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   std::string out;
   out.reserve(((len + 2) / 3) * 4);
   size_t i = 0;
@@ -57,7 +58,8 @@ static std::string base64_encode(const uint8_t *data, size_t len) {
 }
 
 RtspServer::RtspServer(uint16_t port, int audio_sample_rate, int audio_channels)
-    : port_(port), audio_sample_rate_(audio_sample_rate), audio_channels_(audio_channels) {}
+    : port_(port), audio_sample_rate_(audio_sample_rate),
+      audio_channels_(audio_channels) {}
 
 RtspServer::~RtspServer() { this->stop(); }
 
@@ -87,11 +89,11 @@ void RtspServer::start() {
   tv.tv_usec = 0;
   setsockopt(this->listen_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-  struct sockaddr_in addr {};
+  struct sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(this->port_);
   addr.sin_addr.s_addr = INADDR_ANY;
-  if (bind(this->listen_fd_, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+  if (bind(this->listen_fd_, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
     ESP_LOGE(TAG, "bind() failed on port %u", this->port_);
     close(this->listen_fd_);
     this->listen_fd_ = -1;
@@ -104,7 +106,8 @@ void RtspServer::start() {
     return;
   }
   this->running_ = true;
-  xTaskCreatePinnedToCore(RtspServer::accept_task, "rtsp_accept", 4096, this, 3, nullptr, 1);
+  xTaskCreatePinnedToCore(RtspServer::accept_task, "rtsp_accept", 4096, this, 3,
+                          nullptr, 1);
   ESP_LOGI(TAG, "RTSP listening on port %u", this->port_);
 }
 
@@ -128,35 +131,72 @@ void RtspServer::accept_task(void *param) {
 
 void RtspServer::accept_loop() {
   while (this->running_) {
-    struct sockaddr_in client {};
-    socklen_t len = sizeof(client);
-    int fd = accept(this->listen_fd_, (struct sockaddr *) &client, &len);
-    if (fd < 0) {
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    int client_fd =
+        accept(this->listen_fd_, (struct sockaddr *)&addr, &addr_len);
+    if (client_fd < 0) {
+      if (errno != EWOULDBLOCK && errno != EAGAIN && errno != ETIMEDOUT) {
+        ESP_LOGE(TAG, "accept() error: errno=%d (%s)", errno, strerror(errno));
+      }
+      // Periodically clean up closed sessions
+      std::lock_guard<std::mutex> lock(this->sessions_mutex_);
+      for (auto it = this->sessions_.begin(); it != this->sessions_.end();) {
+        if ((*it)->closed()) {
+          it = this->sessions_.erase(it);
+        } else {
+          ++it;
+        }
+      }
       continue;
     }
+    ESP_LOGI(TAG, "New RTSP connection from %s (fd=%d)",
+             inet_ntoa(addr.sin_addr), client_fd);
     std::lock_guard<std::mutex> lock(this->sessions_mutex_);
-    auto session = std::make_unique<RtspSession>(fd, this);
-    RtspSession *raw = session.get();
+
+    // Purge any closed sessions first
+    for (auto it = this->sessions_.begin(); it != this->sessions_.end();) {
+      if ((*it)->closed()) {
+        it = this->sessions_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    // Max 2 concurrent RTSP sessions to prevent task/socket limit exhaustion
+    while (this->sessions_.size() >= 2) {
+      ESP_LOGW(TAG, "Max sessions reached (2), closing oldest session");
+      this->sessions_.front()->request_stop();
+      this->sessions_.erase(this->sessions_.begin());
+    }
+
+    auto session = std::make_unique<RtspSession>(client_fd, this);
+    session->start();
     this->sessions_.push_back(std::move(session));
-    raw->start();
   }
 }
 
 void RtspServer::on_session_closed(RtspSession *session) {
-  std::lock_guard<std::mutex> lock(this->sessions_mutex_);
-  for (auto it = this->sessions_.begin(); it != this->sessions_.end(); ++it) {
-    if (it->get() == session) {
-      it->reset();
-      this->sessions_.erase(it);
-      return;
-    }
-  }
+  // Session cleanup is handled safely in accept_loop and push_video_frame
 }
 
-void RtspServer::push_video_frame(const uint8_t *data, size_t len, bool keyframe, uint32_t timestamp_ms) {
+void RtspServer::push_video_frame(const uint8_t *data, size_t len,
+                                  bool keyframe, uint32_t timestamp_ms) {
+  // Use the H264Packetizer's existing, correct Annex-B parser to extract and
+  // cache SPS/PPS. The sps_pps_cache_ has no send_callback so push_annexb() is
+  // a parse-only operation.
+  if (keyframe && len > 4) {
+    std::lock_guard<std::mutex> sps_lock(this->sps_pps_mutex_);
+    this->sps_pps_cache_.push_annexb(data, len, 0);
+  }
   std::lock_guard<std::mutex> lock(this->sessions_mutex_);
-  for (auto &session : this->sessions_) {
-    session->queue_video_frame(data, len, keyframe, timestamp_ms);
+  for (auto it = this->sessions_.begin(); it != this->sessions_.end();) {
+    if ((*it)->closed()) {
+      it = this->sessions_.erase(it);
+    } else {
+      (*it)->queue_video_frame(data, len, keyframe, timestamp_ms);
+      ++it;
+    }
   }
 }
 
@@ -188,7 +228,8 @@ int RtspServer::active_video_sessions() const {
   return count;
 }
 
-RtspSession::RtspSession(int fd, RtspServer *server) : server_(server), fd_(fd) {
+RtspSession::RtspSession(int fd, RtspServer *server)
+    : server_(server), fd_(fd) {
   this->session_id_ = random_uint32();
   this->h264_.set_ssrc(random_uint32());
   this->h264_.set_payload_type(RTP_PT_H264);
@@ -199,26 +240,30 @@ RtspSession::RtspSession(int fd, RtspServer *server) : server_(server), fd_(fd) 
   this->l16_.set_payload_type(RTP_PT_L16);
   this->l16_.set_sample_rate(this->server_->audio_sample_rate());
   this->l16_.set_channels(this->server_->audio_channels());
-  this->l16_.set_send_callback([this](const uint8_t *data, size_t len) {
-    this->send_track_packet_(this->audio_track_, data, len);
-  });
+
 }
 
 RtspSession::~RtspSession() {
+  this->running_ = false;
+  if (this->fd_ >= 0) {
+    close(this->fd_);
+    this->fd_ = -1;
+  }
   if (this->video_track_.rtp_socket >= 0) {
     close(this->video_track_.rtp_socket);
+    this->video_track_.rtp_socket = -1;
   }
   if (this->audio_track_.rtp_socket >= 0) {
     close(this->audio_track_.rtp_socket);
-  }
-  if (this->fd_ >= 0) {
-    close(this->fd_);
+    this->audio_track_.rtp_socket = -1;
   }
 }
 
 void RtspSession::start() {
-  xTaskCreatePinnedToCore(RtspSession::control_task, "rtsp_ctrl", 6144, this, 3, nullptr, 1);
-  xTaskCreatePinnedToCore(RtspSession::sender_task, "rtsp_send", 8192, this, 4, nullptr, 1);
+  xTaskCreatePinnedToCore(RtspSession::control_task, "rtsp_ctl", 8192, this, 4,
+                          nullptr, 1);
+  xTaskCreatePinnedToCore(RtspSession::sender_task, "rtsp_snd", 8192, this, 3,
+                          nullptr, 1);
 }
 
 void RtspSession::request_stop() {
@@ -248,16 +293,21 @@ void RtspSession::sender_task(void *param) {
 }
 
 bool RtspSession::video_active() const {
-  return this->playing_ && this->video_track_.setup && this->video_track_.transport != TransportKind::NONE;
+  return this->playing_ && this->video_track_.setup &&
+         this->video_track_.transport != TransportKind::NONE;
 }
 
-void RtspSession::queue_video_frame(const uint8_t *data, size_t len, bool keyframe, uint32_t timestamp_ms) {
+void RtspSession::queue_video_frame(const uint8_t *data, size_t len,
+                                    bool keyframe, uint32_t timestamp_ms) {
   if (!this->playing_ || !this->video_active()) {
     return;
   }
   std::lock_guard<std::mutex> lock(this->video_queue_mutex_);
   if (this->video_queue_.size() >= MAX_VIDEO_QUEUE_FRAMES) {
-    this->video_queue_.erase(this->video_queue_.begin());
+    if (!keyframe) {
+      return;
+    }
+    this->video_queue_.clear();
   }
   // Drop the frame under memory pressure rather than letting a failed
   // allocation abort the device (exceptions are disabled in ESP-IDF).
@@ -283,8 +333,10 @@ void RtspSession::queue_audio_data(const uint8_t *data, size_t len) {
   }
   this->audio_queue_.insert(this->audio_queue_.end(), data, data + len);
   if (this->audio_queue_.size() > MAX_AUDIO_QUEUE_BYTES) {
-    this->audio_queue_.erase(this->audio_queue_.begin(),
-                             this->audio_queue_.begin() + (this->audio_queue_.size() - MAX_AUDIO_QUEUE_BYTES));
+    this->audio_queue_.erase(
+        this->audio_queue_.begin(),
+        this->audio_queue_.begin() +
+            (this->audio_queue_.size() - MAX_AUDIO_QUEUE_BYTES));
     this->audio_queue_head_ = 0;
   }
 }
@@ -302,7 +354,8 @@ void RtspSession::sender_loop() {
       size_t avail = this->audio_queue_.size() - this->audio_queue_head_;
       if (avail > 0) {
         audio_chunk.assign(this->audio_queue_.begin() + this->audio_queue_head_,
-                           this->audio_queue_.begin() + this->audio_queue_head_ + avail);
+                           this->audio_queue_.begin() +
+                               this->audio_queue_head_ + avail);
         this->audio_queue_head_ += avail;
         if (this->audio_queue_head_ == this->audio_queue_.size()) {
           this->audio_queue_.clear();
@@ -328,7 +381,8 @@ void RtspSession::sender_loop() {
       }
     }
     if (have_video) {
-      this->h264_.push_annexb(frame.data.data(), frame.data.size(), frame.timestamp_ms);
+      this->h264_.push_annexb(frame.data.data(), frame.data.size(),
+                              frame.timestamp_ms);
       this->video_frames_sent_++;
       did_something = true;
     }
@@ -340,23 +394,28 @@ void RtspSession::sender_loop() {
 
 void RtspSession::control_loop() {
   struct timeval tv;
-  tv.tv_sec = 1;
+  tv.tv_sec = 5;
   tv.tv_usec = 0;
   setsockopt(this->fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  setsockopt(this->fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
   uint8_t recvbuf[2048];
   while (this->running_) {
     ssize_t r = recv(this->fd_, recvbuf, sizeof(recvbuf), 0);
     if (r < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT) {
         continue;
       }
+      ESP_LOGW(TAG, "recv() error r=%d, errno=%d (%s)", static_cast<int>(r),
+               errno, strerror(errno));
       break;
     }
     if (r == 0) {
+      ESP_LOGI(TAG, "Client closed connection cleanly (recv=0)");
       break;
     }
-    this->request_buffer_.insert(this->request_buffer_.end(), recvbuf, recvbuf + r);
+    this->request_buffer_.insert(this->request_buffer_.end(), recvbuf,
+                                 recvbuf + r);
     this->handle_client_();
   }
   this->running_ = false;
@@ -369,27 +428,34 @@ void RtspSession::handle_client_() {
       if (this->request_buffer_.size() < 4) {
         return;
       }
-      uint16_t plen = static_cast<uint16_t>((this->request_buffer_[2] << 8) | this->request_buffer_[3]);
+      uint16_t plen = static_cast<uint16_t>((this->request_buffer_[2] << 8) |
+                                            this->request_buffer_[3]);
       if (this->request_buffer_.size() < 4 + plen) {
         return;
       }
-      this->handle_interleaved_(this->request_buffer_.data(), this->request_buffer_.size());
-      this->request_buffer_.erase(this->request_buffer_.begin(), this->request_buffer_.begin() + 4 + plen);
+      this->handle_interleaved_(this->request_buffer_.data(),
+                                this->request_buffer_.size());
+      this->request_buffer_.erase(this->request_buffer_.begin(),
+                                  this->request_buffer_.begin() + 4 + plen);
       continue;
     }
-    auto it = std::search(this->request_buffer_.begin(), this->request_buffer_.end(),
-                          (const uint8_t *) "\r\n\r\n", (const uint8_t *) "\r\n\r\n" + 4);
+    auto it = std::search(
+        this->request_buffer_.begin(), this->request_buffer_.end(),
+        (const uint8_t *)"\r\n\r\n", (const uint8_t *)"\r\n\r\n" + 4);
     if (it == this->request_buffer_.end()) {
       return;
     }
     size_t req_len = it - this->request_buffer_.begin() + 4;
-    std::string request(this->request_buffer_.begin(), this->request_buffer_.begin() + req_len);
-    this->request_buffer_.erase(this->request_buffer_.begin(), this->request_buffer_.begin() + req_len);
+    std::string request(this->request_buffer_.begin(),
+                        this->request_buffer_.begin() + req_len);
+    this->request_buffer_.erase(this->request_buffer_.begin(),
+                                this->request_buffer_.begin() + req_len);
     this->process_request_(request.c_str(), request.size());
   }
 }
 
-void RtspSession::handle_interleaved_(const uint8_t *header, size_t header_len) {
+void RtspSession::handle_interleaved_(const uint8_t *header,
+                                      size_t header_len) {
   if (header_len < 4) {
     return;
   }
@@ -411,7 +477,8 @@ void RtspSession::handle_interleaved_(const uint8_t *header, size_t header_len) 
     size_t samples = payload_len / 2;
     decoded.resize(samples);
     for (size_t i = 0; i < samples; i++) {
-      uint16_t v = static_cast<uint16_t>((payload[i * 2] << 8) | payload[i * 2 + 1]);
+      uint16_t v =
+          static_cast<uint16_t>((payload[i * 2] << 8) | payload[i * 2 + 1]);
       decoded[i] = static_cast<int16_t>(v);
     }
   } else if (pt == RTP_PT_PCMU || pt == RTP_PT_PCMA) {
@@ -421,7 +488,8 @@ void RtspSession::handle_interleaved_(const uint8_t *header, size_t header_len) 
     decoded.reserve(payload_len * 2);
     for (size_t i = 0; i < payload_len; i++) {
       uint8_t u = payload[i];
-      int32_t s = mulaw ? static_cast<int32_t>(mulaw_decode(u)) : static_cast<int32_t>(alaw_decode(u));
+      int32_t s = mulaw ? static_cast<int32_t>(mulaw_decode(u))
+                        : static_cast<int32_t>(alaw_decode(u));
       decoded.push_back(static_cast<int16_t>(s));
       decoded.push_back(static_cast<int16_t>(s));
     }
@@ -493,8 +561,9 @@ void RtspSession::process_request_(const char *request, size_t len) {
   this->handle_request_(method, url, headers);
 }
 
-static std::string header_value(const std::vector<std::pair<std::string, std::string>> &headers,
-                                const std::string &name) {
+static std::string
+header_value(const std::vector<std::pair<std::string, std::string>> &headers,
+             const std::string &name) {
   for (const auto &h : headers) {
     if (h.first.size() == name.size() &&
         strcasecmp(h.first.c_str(), name.c_str()) == 0) {
@@ -504,23 +573,32 @@ static std::string header_value(const std::vector<std::pair<std::string, std::st
   return "";
 }
 
-void RtspSession::handle_request_(const std::string &method, const std::string &url,
-                                  const std::vector<std::pair<std::string, std::string>> &headers) {
+void RtspSession::handle_request_(
+    const std::string &method, const std::string &url,
+    const std::vector<std::pair<std::string, std::string>> &headers) {
   std::string cseq = header_value(headers, "CSeq");
   if (cseq.empty()) {
     return;
   }
+  ESP_LOGI("p4_rtsp.rtsp", "REQ %s %s (CSeq: %s)", method.c_str(), url.c_str(),
+           cseq.c_str());
   std::string extra_headers = "CSeq: " + cseq + "\r\n";
 
   if (method == "OPTIONS") {
-    const char *publics = "OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN, GET_PARAMETER, SET_PARAMETER";
-    this->send_response_(200, "OK", ("CSeq: " + cseq + "\r\nPublic: " + publics + "\r\n").c_str(), nullptr, 0);
+    const char *publics = "OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN, "
+                          "GET_PARAMETER, SET_PARAMETER";
+    this->send_response_(
+        200, "OK",
+        ("CSeq: " + cseq + "\r\nPublic: " + publics + "\r\n").c_str(), nullptr,
+        0);
     return;
   }
   if (method == "DESCRIBE") {
-    std::string body = this->build_sdp_();
-    std::string content = "CSeq: " + cseq + "\r\n" + "Content-Type: application/sdp\r\n" +
-                          "Content-Base: rtsp://" + url.substr(0, url.find_last_of('/') + 1) + "\r\n" +
+    bool backchannel = url.find("backchannel") != std::string::npos;
+    std::string body = this->build_sdp_(backchannel);
+    std::string content = "CSeq: " + cseq + "\r\n" +
+                          "Content-Type: application/sdp\r\n" +
+                          "Content-Base: " + url + "\r\n" +
                           "Content-Length: " + to_string(body.size()) + "\r\n";
     this->send_response_(200, "OK", content.c_str(), body.c_str(), body.size());
     return;
@@ -528,9 +606,11 @@ void RtspSession::handle_request_(const std::string &method, const std::string &
   if (method == "SETUP") {
     std::string transport = header_value(headers, "Transport");
     TrackId track = TrackId::NONE;
-    if (url.find("trackID=1") != std::string::npos || url.find("trackID1") != std::string::npos) {
+    if (url.find("trackID=1") != std::string::npos ||
+        url.find("trackID1") != std::string::npos) {
       track = TrackId::AUDIO;
-    } else if (url.find("trackID=0") != std::string::npos || url.find("trackID0") != std::string::npos ||
+    } else if (url.find("trackID=0") != std::string::npos ||
+               url.find("trackID0") != std::string::npos ||
                url.find("/0") != std::string::npos) {
       track = TrackId::VIDEO;
     } else if (this->pending_track_ == TrackId::NONE) {
@@ -568,25 +648,28 @@ void RtspSession::handle_request_(const std::string &method, const std::string &
       ts->transport = TransportKind::UDP;
       size_t cp = transport.find("client_port=");
       if (cp != std::string::npos) {
-        ts->client_rtp_port = static_cast<uint16_t>(atoi(transport.c_str() + cp + 12));
+        ts->client_rtp_port =
+            static_cast<uint16_t>(atoi(transport.c_str() + cp + 12));
         size_t dash = transport.find('-', cp + 12);
         ts->client_rtcp_port =
-            dash != std::string::npos ? static_cast<uint16_t>(atoi(transport.c_str() + dash + 1)) : 0;
+            dash != std::string::npos
+                ? static_cast<uint16_t>(atoi(transport.c_str() + dash + 1))
+                : 0;
       }
-      struct sockaddr_in peer {};
+      struct sockaddr_in peer{};
       socklen_t plen = sizeof(peer);
-      getpeername(this->fd_, (struct sockaddr *) &peer, &plen);
+      getpeername(this->fd_, (struct sockaddr *)&peer, &plen);
       ts->client_ip = peer.sin_addr.s_addr;
 
       ts->rtp_socket = socket(AF_INET, SOCK_DGRAM, 0);
       if (ts->rtp_socket >= 0) {
-        struct sockaddr_in local {};
+        struct sockaddr_in local{};
         local.sin_family = AF_INET;
         local.sin_addr.s_addr = INADDR_ANY;
         local.sin_port = 0;
-        bind(ts->rtp_socket, (struct sockaddr *) &local, sizeof(local));
+        bind(ts->rtp_socket, (struct sockaddr *)&local, sizeof(local));
         socklen_t slen = sizeof(local);
-        getsockname(ts->rtp_socket, (struct sockaddr *) &local, &slen);
+        getsockname(ts->rtp_socket, (struct sockaddr *)&local, &slen);
         ts->server_rtp_port = ntohs(local.sin_port);
       }
     }
@@ -594,30 +677,36 @@ void RtspSession::handle_request_(const std::string &method, const std::string &
     this->pending_track_ = track;
 
     std::string transport_reply = this->build_transport_header_(*ts);
-    std::string content = extra_headers + "Session: " + to_string(this->session_id_) + "\r\n" + transport_reply;
+    std::string content = extra_headers +
+                          "Session: " + to_string(this->session_id_) + "\r\n" +
+                          transport_reply;
     this->send_response_(200, "OK", content.c_str(), nullptr, 0);
     return;
   }
   if (method == "PLAY") {
     this->playing_ = true;
     this->video_timestamp_base_ = static_cast<uint32_t>(millis() * 90);
-    std::string content = extra_headers + "Session: " + to_string(this->session_id_) + "\r\n";
+    std::string content =
+        extra_headers + "Session: " + to_string(this->session_id_) + "\r\n";
     if (this->video_track_.setup) {
-      content += "RTP-Info: url=trackID=0;seq=" + to_string(this->h264_.sequence_number()) + "\r\n";
+      content += "RTP-Info: url=trackID=0;seq=" +
+                 to_string(this->h264_.sequence_number()) + "\r\n";
     }
     this->send_response_(200, "OK", content.c_str(), nullptr, 0);
     return;
   }
   if (method == "PAUSE") {
     this->playing_ = false;
-    std::string content = extra_headers + "Session: " + to_string(this->session_id_) + "\r\n";
+    std::string content =
+        extra_headers + "Session: " + to_string(this->session_id_) + "\r\n";
     this->send_response_(200, "OK", content.c_str(), nullptr, 0);
     return;
   }
   if (method == "TEARDOWN") {
     this->teardown_requested_ = true;
     this->playing_ = false;
-    std::string content = extra_headers + "Session: " + to_string(this->session_id_) + "\r\n";
+    std::string content =
+        extra_headers + "Session: " + to_string(this->session_id_) + "\r\n";
     this->send_response_(200, "OK", content.c_str(), nullptr, 0);
     this->running_ = false;
     return;
@@ -630,11 +719,14 @@ void RtspSession::handle_request_(const std::string &method, const std::string &
     this->send_response_(200, "OK", extra_headers.c_str(), nullptr, 0);
     return;
   }
-  this->send_response_(405, "Method Not Allowed", extra_headers.c_str(), nullptr, 0);
+  this->send_response_(405, "Method Not Allowed", extra_headers.c_str(),
+                       nullptr, 0);
 }
 
-void RtspSession::send_response_(int code, const char *reason, const char *extra_headers, const char *body,
+void RtspSession::send_response_(int code, const char *reason,
+                                 const char *extra_headers, const char *body,
                                  size_t body_len) {
+  ESP_LOGI("p4_rtsp.rtsp", "RESP %d %s", code, reason);
   std::string msg = "RTSP/1.0 " + to_string(code) + " " + reason + "\r\n";
   msg += "Server: ESPHome-P4-RTSP/0.1\r\n";
   if (extra_headers != nullptr) {
@@ -648,15 +740,16 @@ void RtspSession::send_response_(int code, const char *reason, const char *extra
   }
 }
 
-std::string RtspSession::build_sdp_() const {
-  struct sockaddr_in local {};
+std::string RtspSession::build_sdp_(bool backchannel) const {
+  struct sockaddr_in local{};
   socklen_t len = sizeof(local);
-  getsockname(this->fd_, (struct sockaddr *) &local, &len);
+  getsockname(this->fd_, (struct sockaddr *)&local, &len);
   std::string ip = inet_ntoa(local.sin_addr);
 
   std::string sdp;
   sdp += "v=0\r\n";
-  sdp += "o=- " + to_string(this->session_id_) + " " + to_string(this->session_id_) + " IN IP4 " + ip + "\r\n";
+  sdp += "o=- " + to_string(this->session_id_) + " " +
+         to_string(this->session_id_) + " IN IP4 " + ip + "\r\n";
   sdp += "s=ESP32-P4 RTSP Stream\r\n";
   sdp += "t=0 0\r\n";
   if (this->server_->video_width_ > 0) {
@@ -664,32 +757,43 @@ std::string RtspSession::build_sdp_() const {
     sdp += "a=control:trackID=0\r\n";
     sdp += "a=rtpmap:96 H264/90000\r\n";
     sdp += "a=fmtp:96 packetization-mode=1;profile-level-id=42001f";
-    if (!this->h264_.sps().empty() && !this->h264_.pps().empty()) {
-      sdp += ";sprop-parameter-sets=" + base64_encode(this->h264_.sps().data(), this->h264_.sps().size()) +
-             "," + base64_encode(this->h264_.pps().data(), this->h264_.pps().size());
+    // Copy SPS/PPS under lock to avoid race with the camera frame thread.
+    std::vector<uint8_t> sps, pps;
+    {
+      std::lock_guard<std::mutex> sps_lock(this->server_->sps_pps_mutex_);
+      sps = !this->h264_.sps().empty() ? this->h264_.sps()
+                                       : this->server_->sps_pps_cache_.sps();
+      pps = !this->h264_.pps().empty() ? this->h264_.pps()
+                                       : this->server_->sps_pps_cache_.pps();
+    }
+    ESP_LOGI("p4_rtsp.sdp", "DESCRIBE: sps=%u pps=%u bytes",
+             (unsigned)sps.size(), (unsigned)pps.size());
+    if (!sps.empty() && !pps.empty()) {
+      sdp += ";sprop-parameter-sets=" + base64_encode(sps.data(), sps.size()) +
+             "," + base64_encode(pps.data(), pps.size());
     }
     sdp += "\r\n";
   }
-  sdp += "m=audio 0 RTP/AVP 97\r\n";
+  sdp += "m=audio 0 RTP/AVP 97 0 8\r\n";
   sdp += "a=control:trackID=1\r\n";
-  sdp += "a=sendrecv\r\n";
-  sdp += "a=rtpmap:97 L16/" + to_string(this->server_->audio_sample_rate()) + "/" +
-         to_string(this->server_->audio_channels()) + "\r\n";
-  // G.711 alternatives so NVRs (e.g. Frigate) know they can send backchannel
-  // audio as µ-law / A-law instead of L16.
-  sdp += "a=rtpmap:0 PCMU/8000\r\n";
-  sdp += "a=rtpmap:8 PCMA/8000\r\n";
+  sdp += "a=" + std::string(backchannel ? "sendrecv" : "sendonly") + "\r\n";
+  sdp += "a=rtpmap:97 L16/" + to_string(this->server_->audio_sample_rate()) +
+         "/" + to_string(this->server_->audio_channels()) + "\r\n";
+  sdp += "a=rtpmap:0 PCMU/8000/1\r\n";
+  sdp += "a=rtpmap:8 PCMA/8000/1\r\n";
   return sdp;
 }
 
-std::string RtspSession::build_transport_header_(const TrackState &track) const {
+std::string
+RtspSession::build_transport_header_(const TrackState &track) const {
   std::string out = "Transport: ";
   if (track.transport == TransportKind::INTERLEAVED) {
-    out += "RTP/AVP/TCP;unicast;interleaved=" + to_string(track.interleaved_channel) + "-" +
+    out += "RTP/AVP/TCP;unicast;interleaved=" +
+           to_string(track.interleaved_channel) + "-" +
            to_string(track.interleaved_channel + 1);
   } else {
-    out += "RTP/AVP;unicast;client_port=" + to_string(track.client_rtp_port) + "-" +
-           to_string(track.client_rtcp_port);
+    out += "RTP/AVP;unicast;client_port=" + to_string(track.client_rtp_port) +
+           "-" + to_string(track.client_rtcp_port);
     if (track.server_rtp_port > 0) {
       out += ";server_port=" + to_string(track.server_rtp_port);
     }
@@ -698,16 +802,19 @@ std::string RtspSession::build_transport_header_(const TrackState &track) const 
   return out + "\r\n";
 }
 
-void RtspSession::send_track_packet_(const TrackState &track, const uint8_t *rtp, size_t len) {
+void RtspSession::send_track_packet_(const TrackState &track,
+                                     const uint8_t *rtp, size_t len) {
   if (track.transport == TransportKind::UDP && track.rtp_socket >= 0) {
-    struct sockaddr_in dest {};
+    struct sockaddr_in dest{};
     dest.sin_family = AF_INET;
     dest.sin_addr.s_addr = track.client_ip;
     dest.sin_port = htons(track.client_rtp_port);
-    sendto(track.rtp_socket, rtp, len, 0, (struct sockaddr *) &dest, sizeof(dest));
+    sendto(track.rtp_socket, rtp, len, 0, (struct sockaddr *)&dest,
+           sizeof(dest));
     return;
   }
-  if (track.transport == TransportKind::INTERLEAVED && track.interleaved_channel >= 0) {
+  if (track.transport == TransportKind::INTERLEAVED &&
+      track.interleaved_channel >= 0) {
     uint8_t header[4];
     header[0] = '$';
     header[1] = static_cast<uint8_t>(track.interleaved_channel);
@@ -719,5 +826,5 @@ void RtspSession::send_track_packet_(const TrackState &track, const uint8_t *rtp
   }
 }
 
-}  // namespace p4_rtsp
-}  // namespace esphome
+} // namespace p4_rtsp
+} // namespace esphome

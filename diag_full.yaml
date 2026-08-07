@@ -5,7 +5,7 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  min_version: 2026.1.0
+  min_version: 2025.11.0
 
 esp32:
   variant: esp32p4
@@ -14,8 +14,10 @@ esp32:
   framework:
     type: esp-idf
     components:
-      - espressif/esp_video^0.8.0
-      - espressif/esp_h264^1.3.0
+      - name: espressif/esp_video
+        ref: "^0.8.0"
+      - name: espressif/esp_h264
+        ref: "^1.3.0"
     advanced:
       enable_idf_experimental_features: true
 
@@ -29,7 +31,6 @@ esp32_hosted:
   d2_pin: GPIO16
   d3_pin: GPIO17
   active_high: true
-  use_psram: true
   slot: 1
 
 wifi:
@@ -65,6 +66,13 @@ audio_dac:
     i2c_id: i2c_audio
     sample_rate: 16000
     bits_per_sample: 16bit
+    # IMPORTANT: use_microphone must stay false. When true, the ES8311
+    # component sets REG14 BIT(6) which switches the codec into PDM digital
+    # microphone mode. Our mic is the ANALOG DSDIN input (GPIO9), so PDM mode
+    # produces all-zero samples. The analog mic path is enabled by default
+    # (REG14 = 0x1A) even with use_microphone: false.
+    use_microphone: false
+    mic_gain: 42DB
 
 i2s_audio:
   - id: i2s_audio_bus
@@ -80,7 +88,7 @@ microphone:
     adc_type: external
     sample_rate: 16000
     bits_per_sample: 16bit
-    channel: right
+    channel: left
 
 speaker:
   - platform: i2s_audio
@@ -88,6 +96,7 @@ speaker:
     i2s_audio_id: i2s_audio_bus
     i2s_dout_pin: GPIO11
     dac_type: external
+    audio_dac: es8311_dac
     sample_rate: 16000
     bits_per_sample: 16bit
     channel: mono
@@ -99,8 +108,8 @@ switch:
     restore_mode: RESTORE_DEFAULT_ON
 
 external_components:
-  - source: /home/andreas/esphome_stream/components
-    components: [p4_rtsp]
+  - source: components
+    components: [p4_rtsp, esp_ipa]
     refresh: 0s
 
 p4_rtsp:
@@ -108,7 +117,7 @@ p4_rtsp:
   video:
     resolution: 800x800
     fps: 25
-    bitrate: 4000000
+    bitrate: 2000000
     gop: 25
     always_on: true
     sccb_sda: 7

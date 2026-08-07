@@ -34,6 +34,23 @@ stream. A test-tone button in the ESPHome web UI drives the speaker.
    The agent cannot access the serial port (`/dev/ttyACM0`, no sudo); the USER
    flashes factory.bin manually and pastes serial logs.
 
+### Root causes found & fixed (2026-08-07, uncommitted)
+1. **Speaker mute:** The ESPHome `es8311` component never calls `set_mute_off()`.
+   After reset REG31 bits 5/6 are set → DAC muted. `set_volume(0.75)` in setup()
+   only writes REG32, not REG31. `I2SAudioSpeaker::set_volume()` would unmute but
+   is only invoked by an explicit `speaker.volume_set` automation (none exists).
+   **Fix:** `P4RtspStream::run_speaker_sequence_()` now calls
+   `speaker_->set_mute_state(false)` + `speaker_->set_volume(1.0f)` before `play()`.
+2. **Mic silence:** `use_microphone: true` in `diag_full.yaml` set `use_mic_ = true`
+   → `configure_mic_()` writes `reg14 |= BIT(6)` → **PDM digital-mic mode**.
+   The Waveshare board's mic is the **analog DSDIN input** (GPIO9); PDM mode
+   produces all-zero samples. **Fix:** `use_microphone: false` in `diag_full.yaml`
+   (analog path is enabled by default, REG14 = 0x1A). Also changed mic I2S channel
+   to `left` (Waveshare ES8311 reference, matches EspHomeVoipLib).
+3. `example_p4_stream.yaml` updated: mic `channel: left`, speaker now has
+   `audio_dac: es8311_dac` (was missing — without it the mute fix would not reach
+   the codec).
+
 ## Environment / how to build & flash
 - Repo: `github.com/andreaswatch/esphome_rtsp`, branch `main`, commit `96a35cc`
   (working tree = `/home/andreas/esphome_stream`). Last tag `v0.2.0` predates the
@@ -118,45 +135,24 @@ stream. A test-tone button in the ESPHome web UI drives the speaker.
 
 ## Next steps for the following agent (in priority order)
 
-### 1. Speaker: no audible sound
-The bus path is proven (no errors, clean drain). Investigate:
-- **ES8311 DAC config**: `audio_dac: platform es8311` (diag_full.yaml:62) with
-  sample_rate 16000 / 16 bit. Check ESPHome `es8311` component for mute/volume
-  defaults — the codec may be muted or at zero gain by default. Consider setting
-  volume/mute via the `Speaker::set_volume()`/`set_mute_state()` (note the
-  component routes volume through `audio_dac`), or checking `i2s_audio_speaker`
-  software volume path.
-- **Amp enable GPIO53** (`Speaker Enable` switch, restore ON) — confirm the amp
-  actually powers up; maybe it needs a delay after boot before the first playback.
-- **I2S TX slot / channel config**: speaker is `channel: mono`, 16 bit, 16 kHz.
-  Compare against the reference Waveshare config in
-  `/tmp/opencode/EspHomeVoipLib/example_esp32p4.yaml` (same hardware, worked
-  there). VoipLib used `mclk_multiple: 256` on the bus and `channel: left` for
-  the mic — ours has no explicit `mclk_multiple` (check default) and `right`.
-- **Playback test that is easier to hear**: the current tone is 60 ms/1 kHz.
-  Temporarily play a longer / looping tone (e.g. 1 s sine at full scale) to
-  confirm the path, then shorten.
-- Check whether the tone data actually reaches the codec: instrument the speaker
-  task, or use a logic analyzer on ASDOUT (GPIO11) / LRCLK / BCLK during playback.
-- Ask the user to confirm whether the ES8311 has an on-board amp, and measure
-  ASDOUT with a scope while the tone plays.
+### 1. Verify speaker + mic fixes on hardware (build, flash, test)
+The root causes were found and fixed (see "Root causes found & fixed" above):
+- Build & flash `diag_full.yaml` (user flashes factory.bin via USB, paste logs).
+- **Speaker test:** press "Audio Test-Ton" in the web UI (port 80). Expected:
+  the tone should now be AUDIBLE (was silent). Confirm no bus errors in the log.
+- **Mic test:** record/pull the L16 audio track (e.g. ffmpeg or go2rtc). Expected:
+  non-zero Peak/RMS (was all zeros).
+- If the speaker is still silent, focus next on the **amp enable GPIO53** timing
+  (does it need a delay after boot?), the ES8311 REG13/REG31 values via logic
+  analyzer / I2C dump, and whether the Tone is actually reaching ASDOUT (GPIO11).
+- If the mic is still silent, confirm the analog mic path registers (REG14 =
+  0x1A, REG16 = 42DB gain, REG17 = 0xC8) and try `channel: right` vs `left`.
 
-### 2. Microphone: all-zero samples
-- Compare with VoipLib: mic `channel: left`, and the same DIN pin (GPIO9).
-  Our config uses `channel: right` — TRY `channel: left` first (likely the data
-  lands on the other I2S slot).
-- Check ES8311 ADC path (micbias, PGA gain, ADC unmute, channel routing) in the
-  ESPHome `es8311` component. VoipLib used `mic_gain: 2`.
-- Confirm the mic element is actually a working MEMS mic / line input, and that
-  the OV5647 camera board's audio isn't the ES8311's line-in that needs enabling.
-- Verify with a raw recording before RTSP: record to WAV via a temporary service
-  and inspect Peak/RMS; if still zeros, it's the codec/ADC config, not RTSP.
-
-### 3. Two-way audio (after 1+2)
+### 2. Two-way audio
 Implement backchannel burst coalescing (see "Design limitation" above), then test
 Frigate two-way audio. Frigate will send PCMU/PCMA on the audio channel.
 
-### 4. OTA reliability (nice-to-have)
+### 3. OTA reliability (nice-to-have)
 Investigate the `update prepare` timeout with ~906 KB image. Options: raise
 OTA/APDU timeouts, check `esp32_hosted` (C6) throughput, or split the flash
 into a base image + OTA-compressed delta. Meanwhile the user flashes via USB.

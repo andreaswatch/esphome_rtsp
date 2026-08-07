@@ -75,7 +75,10 @@ microphone:
     adc_type: external
     sample_rate: 16000
     bits_per_sample: 16bit
-    channel: right
+    # The ES8311 AD converts the analog mic on the LEFT I2S slot. Using
+    # 'left' ensures the samples land on the correct channel (matching the
+    # Waveshare ES8311 reference). 'right' previously produced silence.
+    channel: left
 
 speaker:
   - platform: i2s_audio
@@ -83,6 +86,7 @@ speaker:
     i2s_audio_id: i2s_audio_bus
     i2s_dout_pin: GPIO11
     dac_type: external
+    audio_dac: es8311_dac
     sample_rate: 16000
     bits_per_sample: 16bit
     channel: mono

@@ -77,7 +77,8 @@ void H264Packetizer::push_annexb(const uint8_t *frame, size_t len, uint32_t time
     uint8_t type = nal[0] & 0x1f;
     if (type == NAL_TYPE_SPS && nal_len > 4) {
       this->sps_.assign(nal, nal + nal_len);
-    } else if (type == NAL_TYPE_PPS && nal_len > 4) {
+    } else if (type == NAL_TYPE_PPS && nal_len >= 1) {
+      // PPS for H.264 CBP can be short (2-4 bytes); use >= 1 to avoid missing it.
       this->pps_.assign(nal, nal + nal_len);
     }
     this->send_nal_(nal, nal_len, ts);
@@ -87,12 +88,6 @@ void H264Packetizer::push_annexb(const uint8_t *frame, size_t len, uint32_t time
 
 void H264Packetizer::send_nal_(const uint8_t *nal, size_t len, uint32_t ts) {
   uint8_t type = nal[0] & 0x1f;
-  if (type == NAL_TYPE_IDR && !this->sps_.empty() && !this->pps_.empty()) {
-    std::vector<std::pair<const uint8_t *, size_t>> stapa;
-    stapa.emplace_back(this->sps_.data(), this->sps_.size());
-    stapa.emplace_back(this->pps_.data(), this->pps_.size());
-    this->send_stapa_(stapa, ts);
-  }
   size_t single_overhead = RTP_HEADER_SIZE + 1;
   if (len <= RTP_MTU_PAYLOAD - 1) {
     this->send_single_(nal, len, ts, type == NAL_TYPE_IDR);

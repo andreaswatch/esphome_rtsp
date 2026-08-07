@@ -106,6 +106,9 @@ async def to_code(config):
         add_idf_sdkconfig_option("CONFIG_ISP_CTRL_FUNC_IN_IRAM", True)
         add_idf_sdkconfig_option("CONFIG_CAM_CTLR_MIPI_CSI_ISR_CACHE_SAFE", True)
         add_idf_sdkconfig_option("CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER", True)
+        # Increase LWIP socket limit — the default of 16 is too low for RTSP
+        # + web_server + API + esp32_hosted all running concurrently.
+        add_idf_sdkconfig_option("CONFIG_LWIP_MAX_SOCKETS", 32)
         ov5647_fmt = {
             (320, 240): "CONFIG_CAMERA_OV5647_MIPI_RAW8_800x640_50FPS",
             (640, 480): "CONFIG_CAMERA_OV5647_MIPI_RAW8_800x640_50FPS",
