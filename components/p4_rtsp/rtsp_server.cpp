@@ -236,11 +236,11 @@ RtspSession::RtspSession(int fd, RtspServer *server)
   this->h264_.set_send_callback([this](const uint8_t *data, size_t len) {
     this->send_track_packet_(this->video_track_, data, len);
   });
-  this->pcma_.set_ssrc(random_uint32());
-  this->pcma_.set_payload_type(RTP_PT_PCMA);
-  this->pcma_.set_input_sample_rate(this->server_->audio_sample_rate());
-  this->pcma_.set_channels(this->server_->audio_channels());
-  this->pcma_.set_send_callback([this](const uint8_t *data, size_t len) {
+  this->opus_.set_ssrc(random_uint32());
+  this->opus_.set_payload_type(RTP_PT_OPUS);
+  this->opus_.set_input_sample_rate(this->server_->audio_sample_rate());
+  this->opus_.set_channels(this->server_->audio_channels());
+  this->opus_.set_send_callback([this](const uint8_t *data, size_t len) {
     this->send_track_packet_(this->audio_track_, data, len);
   });
 
@@ -369,7 +369,7 @@ void RtspSession::sender_loop() {
     }
     if (!audio_chunk.empty()) {
       if (this->audio_track_.transport != TransportKind::NONE) {
-        this->pcma_.push_pcm16(audio_chunk.data(), audio_chunk.size());
+        this->opus_.push_pcm16(audio_chunk.data(), audio_chunk.size());
       }
       audio_chunk.clear();
     }
@@ -777,12 +777,14 @@ std::string RtspSession::build_sdp_(bool backchannel) const {
     }
     sdp += "\r\n";
   }
-  sdp += "m=audio 0 RTP/AVP 8\r\n";
+  sdp += "m=audio 0 RTP/AVP 111 0 8\r\n";
   sdp += "a=control:trackID=1\r\n";
   sdp += "a=" + std::string(backchannel ? "sendrecv" : "sendonly") + "\r\n";
-  sdp += "a=rtpmap:8 PCMA/8000/1\r\n";
+  sdp += "a=rtpmap:111 opus/48000/2\r\n";
+  sdp += "a=fmtp:111 minptime=10;useinbandfec=1\r\n";
   if (backchannel) {
     sdp += "a=rtpmap:0 PCMU/8000/1\r\n";
+    sdp += "a=rtpmap:8 PCMA/8000/1\r\n";
   }
   return sdp;
 }

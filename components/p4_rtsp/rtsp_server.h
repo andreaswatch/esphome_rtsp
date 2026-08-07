@@ -155,7 +155,7 @@ class RtspSession {
   size_t audio_queue_head_{0};
 
   H264Packetizer h264_;
-  PCMAPacketizer pcma_;
+  OpusPacketizer opus_;
   uint32_t video_timestamp_base_{0};
   uint32_t audio_timestamp_base_{0};
   uint32_t video_frames_sent_{0};
