@@ -18,6 +18,8 @@ esp32:
         ref: "^0.8.0"
       - name: espressif/esp_h264
         ref: "^1.3.0"
+      - name: espressif/esp_audio_codec
+        ref: "2.5.0"
     advanced:
       enable_idf_experimental_features: true
 

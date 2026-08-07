@@ -15,6 +15,7 @@ static constexpr uint8_t RTP_PT_PCMU = 0;
 static constexpr uint8_t RTP_PT_PCMA = 8;
 static constexpr uint8_t RTP_PT_H264 = 96;
 static constexpr uint8_t RTP_PT_L16 = 97;
+static constexpr uint8_t RTP_PT_OPUS = 111;
 static constexpr uint32_t RTP_CLOCK_VIDEO = 90000;
 
 using RtpSendCallback = std::function<void(const uint8_t *data, size_t len)>;
