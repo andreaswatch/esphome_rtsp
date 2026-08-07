@@ -80,11 +80,6 @@ void P4RtspStream::loop() {
 }
 
 void P4RtspStream::start_streaming_() {
-  static int call_count = 0;
-  if (++call_count <= 5 || call_count % 100 == 0) {
-    ESP_LOGI(TAG, "start_streaming call #%d: mic_started=%d speaker_active=%d mic_ptr=%p",
-             call_count, this->mic_started_, this->speaker_active_, this->microphone_);
-  }
   if (!this->camera_running_ && this->camera_ != nullptr &&
       !this->camera_failed_) {
     if (!this->camera_->starting() && !this->camera_->running()) {

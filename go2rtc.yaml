@@ -1,0 +1,11 @@
+streams:
+  esp32p4_cam:
+    - ffmpeg:rtsp://192.168.178.196:554/live?backchannel=1#video=h264#audio=pcma
+api:
+  listen: :1984
+rtsp:
+  listen: :8554
+webrtc:
+  listen: :8555
+log:
+  level: info

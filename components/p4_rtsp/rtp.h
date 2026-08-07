@@ -67,5 +67,31 @@ class L16Packetizer {
   uint32_t timestamp_{0};
 };
 
+// G.711 A-law (PCMA) packetizer. Accepts raw 16-bit little-endian PCM (as
+// delivered by the I2S microphone) and emits 8-bit A-law RTP packets.
+// go2rtc / Frigate / WebRTC handle PCMA natively, unlike L16/s16be.
+class PCMAPacketizer {
+ public:
+  PCMAPacketizer();
+  void set_send_callback(RtpSendCallback callback);
+  void set_ssrc(uint32_t ssrc);
+  void set_payload_type(uint8_t pt);
+  // Input sample rate of the raw PCM stream handed to push_pcm16.
+  void set_input_sample_rate(int rate);
+  void set_channels(int channels);
+  void push_pcm16(const uint8_t *data, size_t len);
+
+  uint16_t sequence_number() const { return this->seq_; }
+
+ protected:
+  RtpSendCallback send_callback_;
+  uint32_t ssrc_{0};
+  uint8_t payload_type_{RTP_PT_PCMA};
+  uint16_t seq_{0};
+  int input_sample_rate_{16000};
+  int channels_{1};
+  uint32_t timestamp_{0};
+};
+
 }  // namespace p4_rtsp
 }  // namespace esphome

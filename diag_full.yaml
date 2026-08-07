@@ -84,17 +84,19 @@ microphone:
   - platform: i2s_audio
     id: mic
     i2s_audio_id: i2s_audio_bus
-    i2s_din_pin: GPIO9
+    i2s_din_pin: GPIO11  # ASDOUT from ES8311 - Microphone data input
     adc_type: external
     sample_rate: 16000
     bits_per_sample: 16bit
     channel: left
+    # AGC (Automatic Gain Control) für bessere Audio-Qualität
+    # use_agc: true  # Falls verfügbar
 
 speaker:
   - platform: i2s_audio
     id: spk
     i2s_audio_id: i2s_audio_bus
-    i2s_dout_pin: GPIO11
+    i2s_dout_pin: GPIO9  # DSDIN to ES8311 - Speaker data output
     dac_type: external
     audio_dac: es8311_dac
     sample_rate: 16000
