@@ -269,9 +269,9 @@ RtspSession::~RtspSession() {
 }
 
 void RtspSession::start() {
-  xTaskCreatePinnedToCore(RtspSession::control_task, "rtsp_ctl", 16384, this, 4,
+  xTaskCreatePinnedToCore(RtspSession::control_task, "rtsp_ctl", 32768, this, 4,
                           nullptr, 1);
-  xTaskCreatePinnedToCore(RtspSession::sender_task, "rtsp_snd", 16384, this, 3,
+  xTaskCreatePinnedToCore(RtspSession::sender_task, "rtsp_snd", 32768, this, 3,
                           nullptr, 1);
 }
 
