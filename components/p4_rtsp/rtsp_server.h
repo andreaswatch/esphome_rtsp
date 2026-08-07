@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "rtp.h"
+#include "web_test_server.h"  // for SpiramAllocator
 
 namespace esphome {
 namespace p4_rtsp {
@@ -19,7 +20,9 @@ class RtspSession;
 using BackchannelCallback = std::function<void(const int16_t *data, size_t samples)>;
 
 struct SessionVideoFrame {
-  std::vector<uint8_t> data;
+  // Keep frame copies in PSRAM — the internal heap is too small for full H264
+  // frames once the camera's PSRAM buffers are allocated.
+  std::vector<uint8_t, SpiramAllocator<uint8_t>> data;
   uint32_t timestamp_ms{0};
   bool keyframe{false};
 };
@@ -131,6 +134,7 @@ class RtspSession {
   uint32_t session_id_{0};
   std::atomic<bool> running_{true};
   std::atomic<bool> closed_{false};
+  std::atomic<bool> sender_done_{false};
   bool playing_{false};
   bool teardown_requested_{false};
 

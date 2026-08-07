@@ -12,6 +12,8 @@ namespace p4_rtsp {
 
 static const char *const TAG = "p4_rtsp";
 
+static const char *const COMPONENT_VERSION = "0.2.0-csi-direct";
+
 void P4RtspStream::setup() {
   ESP_LOGCONFIG(TAG, "Setting up P4RTSP stream");
 
@@ -34,7 +36,7 @@ void P4RtspStream::setup() {
     this->camera_ = std::make_unique<CameraPipeline>();
     this->camera_->set_config(this->video_width_, this->video_height_, this->video_fps_,
                               this->video_bitrate_, this->video_gop_, this->sccb_sda_, this->sccb_scl_,
-                              this->xclk_pin_, this->data_lanes_);
+                              this->xclk_pin_, this->data_lanes_, this->camera_power_down_pin_);
     this->camera_->set_frame_callback([this](const uint8_t *data, size_t len, bool keyframe,
                                              uint32_t timestamp_ms) {
       this->server_->push_video_frame(data, len, keyframe, timestamp_ms);
@@ -51,9 +53,22 @@ void P4RtspStream::setup() {
 
   this->server_->start();
   this->server_started_ = true;
+
+  if (this->video_always_on_) {
+    this->start_streaming_();
+  }
 }
 
 void P4RtspStream::loop() {
+  uint32_t now = millis();
+  if (now - this->last_version_log_ms_ > 30000) {
+    this->last_version_log_ms_ = now;
+    ESP_LOGI(TAG, "p4_rtsp component %s running (built %s %s)", COMPONENT_VERSION, __DATE__, __TIME__);
+  }
+  if (this->video_always_on_) {
+    this->start_streaming_();
+    return;
+  }
   bool rtsp_active = this->server_started_ && this->server_->has_clients();
   bool web_active = this->web_ != nullptr && this->web_->needs_streaming();
   if (rtsp_active || web_active) {
@@ -65,10 +80,16 @@ void P4RtspStream::loop() {
 
 void P4RtspStream::start_streaming_() {
   if (!this->camera_running_ && this->camera_ != nullptr && !this->camera_failed_) {
-    if (this->camera_->start()) {
+    if (!this->camera_->starting() && !this->camera_->running()) {
+      // Launch the (potentially slow) sensor/ISP/CSI setup in its own task so
+      // loopTask never trips the watchdog.
+      this->camera_->start_async();
+    }
+    if (this->camera_->running()) {
       this->camera_running_ = true;
       ESP_LOGI(TAG, "Camera pipeline started");
-    } else {
+    } else if (!this->camera_->starting()) {
+      // Start task ran and did not end in a running pipeline → permanent failure.
       this->camera_failed_ = true;
       ESP_LOGE(TAG, "Camera pipeline failed to start");
     }

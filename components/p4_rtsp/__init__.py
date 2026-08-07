@@ -1,6 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import microphone, speaker
+from esphome.components.esp32 import add_idf_sdkconfig_option
 from esphome.const import CONF_ID
 
 DEPENDENCIES = ["network"]
@@ -15,6 +16,8 @@ CONF_DATA_LANES = "data_lanes"
 CONF_SCCB_SDA = "sccb_sda"
 CONF_SCCB_SCL = "sccb_scl"
 CONF_XCLK_PIN = "xclk_pin"
+CONF_POWER_DOWN_PIN = "power_down_pin"
+CONF_ALWAYS_ON = "always_on"
 CONF_AUDIO = "audio"
 CONF_MICROPHONE = "microphone"
 CONF_SPEAKER = "speaker"
@@ -28,7 +31,9 @@ P4RtspStream = p4_rtsp_ns.class_("P4RtspStream", cg.Component)
 RESOLUTIONS = {
     "320x240": (320, 240),
     "640x480": (640, 480),
+    "800x800": (800, 800),
     "800x1280": (800, 1280),
+    "1280x960": (1280, 960),
     "1280x720": (1280, 720),
     "1920x1080": (1920, 1080),
 }
@@ -43,6 +48,8 @@ VIDEO_SCHEMA = cv.Schema(
         cv.Optional(CONF_SCCB_SDA, default=7): cv.int_,
         cv.Optional(CONF_SCCB_SCL, default=8): cv.int_,
         cv.Optional(CONF_XCLK_PIN, default=40): cv.int_,
+        cv.Optional(CONF_POWER_DOWN_PIN, default=-1): cv.int_,
+        cv.Optional(CONF_ALWAYS_ON, default=False): cv.boolean,
     }
 )
 
@@ -85,6 +92,26 @@ async def to_code(config):
         cg.add(var.set_video_gop(video[CONF_GOP]))
         cg.add(var.set_camera_pins(video[CONF_SCCB_SDA], video[CONF_SCCB_SCL],
                                    video[CONF_XCLK_PIN], video[CONF_DATA_LANES]))
+        cg.add(var.set_camera_power_down_pin(video[CONF_POWER_DOWN_PIN]))
+        cg.add(var.set_video_always_on(video[CONF_ALWAYS_ON]))
+
+        # Enable the OV5647 MIPI-CSI sensor driver and pick its default output
+        # format so it matches the requested resolution as closely as possible.
+        add_idf_sdkconfig_option("CONFIG_CAMERA_OV5647", True)
+        # Keep the ISP control path and MIPI-CSI ISR out of flash/cache to avoid
+        # ISP FIFO overflows under sustained capture load.
+        add_idf_sdkconfig_option("CONFIG_ISP_CTRL_FUNC_IN_IRAM", True)
+        add_idf_sdkconfig_option("CONFIG_CAM_CTLR_MIPI_CSI_ISR_CACHE_SAFE", True)
+        add_idf_sdkconfig_option("CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER", True)
+        ov5647_fmt = {
+            (320, 240): "CONFIG_CAMERA_OV5647_MIPI_RAW8_800x640_50FPS",
+            (640, 480): "CONFIG_CAMERA_OV5647_MIPI_RAW8_800x640_50FPS",
+            (800, 1280): "CONFIG_CAMERA_OV5647_MIPI_RAW8_800x1280_50FPS",
+            (800, 800): "CONFIG_CAMERA_OV5647_MIPI_RAW8_800x800_50FPS",
+            (1280, 960): "CONFIG_CAMERA_OV5647_MIPI_RAW10_1280x960_BINNING_45FPS",
+        }
+        ov5647_fmt = ov5647_fmt.get((width, height), "CONFIG_CAMERA_OV5647_MIPI_RAW10_1920x1080_30FPS")
+        add_idf_sdkconfig_option(ov5647_fmt, True)
 
     if CONF_WEB_PORT in config:
         cg.add(var.set_web_port(config[CONF_WEB_PORT]))

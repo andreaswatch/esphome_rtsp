@@ -39,6 +39,8 @@ class P4RtspStream : public Component {
     this->xclk_pin_ = xclk;
     this->data_lanes_ = lanes;
   }
+  void set_camera_power_down_pin(int pin) { this->camera_power_down_pin_ = pin; }
+  void set_video_always_on(bool always_on) { this->video_always_on_ = always_on; }
   void set_microphone(microphone::Microphone *microphone) { this->microphone_ = microphone; }
   void set_speaker(speaker::Speaker *speaker) { this->speaker_ = speaker; }
   void set_audio_sample_rate(int sample_rate) { this->audio_sample_rate_ = sample_rate; }
@@ -64,6 +66,8 @@ class P4RtspStream : public Component {
   int sccb_scl_{8};
   int xclk_pin_{40};
   int data_lanes_{2};
+  int camera_power_down_pin_{-1};
+  bool video_always_on_{false};
   microphone::Microphone *microphone_{nullptr};
   speaker::Speaker *speaker_{nullptr};
   int audio_sample_rate_{16000};
@@ -77,6 +81,7 @@ class P4RtspStream : public Component {
   bool camera_running_{false};
   bool camera_failed_{false};
   bool mic_started_{false};
+  uint32_t last_version_log_ms_{0};
 };
 
 }  // namespace p4_rtsp

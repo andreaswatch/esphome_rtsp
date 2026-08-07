@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <string>
 #include <strings.h>
 
@@ -242,6 +243,11 @@ void WebSession::queue_video_frame(const uint8_t *data, size_t len, bool keyfram
   std::lock_guard<std::mutex> lock(this->video_queue_mutex_);
   if (this->video_queue_.size() >= MAX_VIDEO_QUEUE_FRAMES) {
     this->video_queue_.erase(this->video_queue_.begin());
+  }
+  // Drop the frame under memory pressure rather than letting a failed
+  // allocation abort the device (exceptions are disabled in ESP-IDF).
+  if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < len + 4096) {
+    return;
   }
   WebVideoFrame frame;
   frame.data.assign(data, data + len);

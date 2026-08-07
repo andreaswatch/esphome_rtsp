@@ -6,6 +6,8 @@
 #include <string>
 #include <strings.h>
 
+#include "esp_heap_caps.h"
+
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
@@ -228,6 +230,12 @@ void RtspSession::control_task(void *param) {
   auto *session = static_cast<RtspSession *>(param);
   session->control_loop();
   session->closed_ = true;
+  // Wait for the sender task to fully stop before the session object is
+  // destroyed by on_session_closed(). Otherwise the sender thread would keep
+  // accessing freed memory (use-after-free crash).
+  while (!session->sender_done_) {
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
   session->server_->on_session_closed(session);
   vTaskDelete(nullptr);
 }
@@ -235,6 +243,7 @@ void RtspSession::control_task(void *param) {
 void RtspSession::sender_task(void *param) {
   auto *session = static_cast<RtspSession *>(param);
   session->sender_loop();
+  session->sender_done_ = true;
   vTaskDelete(nullptr);
 }
 
@@ -249,6 +258,11 @@ void RtspSession::queue_video_frame(const uint8_t *data, size_t len, bool keyfra
   std::lock_guard<std::mutex> lock(this->video_queue_mutex_);
   if (this->video_queue_.size() >= MAX_VIDEO_QUEUE_FRAMES) {
     this->video_queue_.erase(this->video_queue_.begin());
+  }
+  // Drop the frame under memory pressure rather than letting a failed
+  // allocation abort the device (exceptions are disabled in ESP-IDF).
+  if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < len + 4096) {
+    return;
   }
   SessionVideoFrame frame;
   frame.data.assign(data, data + len);
