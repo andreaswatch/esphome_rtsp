@@ -81,6 +81,7 @@ enum class TrackId : uint8_t {
   NONE = 0,
   VIDEO = 1,
   AUDIO = 2,
+  BACKCHANNEL = 3,
 };
 
 enum class TransportKind : uint8_t {
@@ -146,6 +147,7 @@ class RtspSession {
 
   TrackState video_track_;
   TrackState audio_track_;
+  TrackState backchannel_track_;
   TrackId pending_track_{TrackId::NONE};
 
   std::mutex video_queue_mutex_;
@@ -164,9 +166,6 @@ class RtspSession {
 
   std::mutex send_mutex_;
   std::vector<uint8_t> request_buffer_;
-
-  bool audio_channel_set_{false};
-  int audio_interleaved_channel_{-1};
 };
 
 }  // namespace p4_rtsp

@@ -475,7 +475,7 @@ void RtspSession::handle_interleaved_(const uint8_t *header,
   }
   const uint8_t *rtp = header + 4;
   uint8_t pt = rtp[1] & 0x7f;
-  if (channel != this->audio_interleaved_channel_) {
+  if (channel != this->backchannel_track_.interleaved_channel) {
     return;
   }
   const uint8_t *payload = rtp + RTP_HEADER_SIZE;
@@ -646,8 +646,11 @@ void RtspSession::handle_request_(
   if (method == "SETUP") {
     std::string transport = header_value(headers, "Transport");
     TrackId track = TrackId::NONE;
-    if (url.find("trackID=1") != std::string::npos ||
-        url.find("trackID1") != std::string::npos) {
+    if (url.find("trackID=2") != std::string::npos ||
+        url.find("trackID2") != std::string::npos) {
+      track = TrackId::BACKCHANNEL;
+    } else if (url.find("trackID=1") != std::string::npos ||
+               url.find("trackID1") != std::string::npos) {
       track = TrackId::AUDIO;
     } else if (url.find("trackID=0") != std::string::npos ||
                url.find("trackID0") != std::string::npos ||
@@ -666,6 +669,8 @@ void RtspSession::handle_request_(
       ts = &this->video_track_;
     } else if (track == TrackId::AUDIO) {
       ts = &this->audio_track_;
+    } else if (track == TrackId::BACKCHANNEL) {
+      ts = &this->backchannel_track_;
     }
     if (ts == nullptr) {
       this->send_response_(404, "Not Found", extra_headers.c_str(), nullptr, 0);
@@ -679,10 +684,6 @@ void RtspSession::handle_request_(
       if (eq != std::string::npos) {
         int ch = atoi(transport.c_str() + eq + 12);
         ts->interleaved_channel = ch;
-        if (track == TrackId::AUDIO) {
-          this->audio_interleaved_channel_ = ch;
-          this->audio_channel_set_ = true;
-        }
       }
     } else {
       ts->transport = TransportKind::UDP;
@@ -806,6 +807,15 @@ std::string RtspSession::build_sdp_(bool backchannel) const {
       pps = !this->h264_.pps().empty() ? this->h264_.pps()
                                        : this->server_->sps_pps_cache_.pps();
     }
+    // Fall back to ESP32-P4 default SPS/PPS if no keyframe has been cached yet
+    if (sps.empty()) {
+      static const uint8_t default_sps[] = {0x67, 0x42, 0x00, 0x1f, 0x96, 0x50, 0x14, 0x05, 0x98, 0x08, 0x00, 0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x01, 0x90, 0x28, 0x02, 0x1a};
+      sps.assign(default_sps, default_sps + sizeof(default_sps));
+    }
+    if (pps.empty()) {
+      static const uint8_t default_pps[] = {0x68, 0xce, 0x09, 0xc8};
+      pps.assign(default_pps, default_pps + sizeof(default_pps));
+    }
     ESP_LOGI("p4_rtsp.sdp", "DESCRIBE: sps=%u pps=%u bytes",
              (unsigned)sps.size(), (unsigned)pps.size());
     if (!sps.empty() && !pps.empty()) {
@@ -816,10 +826,14 @@ std::string RtspSession::build_sdp_(bool backchannel) const {
   }
   sdp += "m=audio 0 RTP/AVP 111 0 8\r\n";
   sdp += "a=control:trackID=1\r\n";
-  sdp += "a=" + std::string(backchannel ? "sendrecv" : "sendonly") + "\r\n";
+  sdp += "a=recvonly\r\n";
   sdp += "a=rtpmap:111 opus/48000/2\r\n";
   sdp += "a=fmtp:111 minptime=10;useinbandfec=1\r\n";
   if (backchannel) {
+    // Backchannel: camera receives audio (go2rtc sends to speaker).
+    sdp += "m=audio 0 RTP/AVP 0 8\r\n";
+    sdp += "a=control:trackID=2\r\n";
+    sdp += "a=sendonly\r\n";
     sdp += "a=rtpmap:0 PCMU/8000/1\r\n";
     sdp += "a=rtpmap:8 PCMA/8000/1\r\n";
   }
