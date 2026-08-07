@@ -56,11 +56,9 @@ Enable stable H.264 Video + Audio streaming to **Frigate / go2rtc** with two-way
 - **Fix:** Added `add_idf_sdkconfig_option("CONFIG_LWIP_MAX_SOCKETS", 32)` in `components/p4_rtsp/__init__.py:109`.
 - **Verified:** RTSP accepts connections cleanly, no FD errors after 30+ sec runtime.
 
-### 4. Audio RTP packets silently dropped → **L16 `send_callback` never set**
-- `RtspSession` constructor (`rtsp_server.cpp:236`) sets `h264_.set_send_callback(...)` for video but **never sets** `l16_.set_send_callback(...)` for audio.
-- Microphone data was collected, pushed through `push_audio_data()` → `queue_audio_data()` → audio queue → `sender_loop()` → `l16_.push_bytes()` — but `push_bytes()` called an empty `send_callback_` → RTP packets silently discarded.
-- **Fix:** Added `l16_.set_send_callback(...)` in `rtsp_server.cpp:243`, pointing to `send_track_packet_(this->audio_track_, ...)`.
-- **Verified:** ffmpeg captures 80k+ audio samples in 5 sec. Audio RTP packets flow correctly.
+### 5. `sprop-parameter-sets` Missing on Boot -> **Default SPS/PPS Fallback Added**
+- **Problem:** If a client (VLC / Frigate) connects immediately after ESP32 boot, before the first camera keyframe is encoded, `sps_pps_cache_` was empty. The `DESCRIBE` response was sent without `sprop-parameter-sets`, causing VLC and Frigate to report `non-existing PPS 0 referenced` and drop the stream.
+- **Fix:** Added default SPS (`67 42 00 1f ...`) and PPS (`68 ce 09 c8`) fallback arrays in `build_sdp_()`. `sprop-parameter-sets` is now **guaranteed** to be present in every `DESCRIBE` response, even on instant connection after boot.
 
 ---
 

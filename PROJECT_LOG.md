@@ -31,9 +31,9 @@
 
 ### ES8311 Audio-Codec
 - **Mic:** analoger DSDIN-Eingang (GPIO9, vom ES8311-ADC). **Wichtig:** `use_microphone: false` — sonst schaltet das Component REG14 BIT6 → PDM-Digital-Mic-Modus → analoge Mic-Samples werden 0.
-- **Mic-Gain:** 42 dB (REG16), ADC-Gain REG17=0xC8.
+- **Mic-Gain:** 24 dB (REG16=0x04, Datasheet-Default; vorher 42 dB = 0x07), ADC-Gain REG17=0xC8, PGA 30 dB (REG14=0x1A).
 - **Speaker:** DSDIN (GPIO9) → ES8311-DAC → NS4150B Amp → GPIO53 enable.
-- **MCLK:** 16 kHz × 256 = 4.096 MHz — exakt in der ES8311-Koeffiziententabelle vorhanden.
+- **MCLK:** 8 kHz × 256 = 2.048 MHz — exakt in der ES8311-Koeffiziententabelle vorhanden. **Alle vier Raten müssen synchron sein** (`es8311_dac`/`mic`/`speaker`/RTSP-`audio.sample_rate`); die ES8311-Clocking kommt aus `es8311_dac.sample_rate` (`set_sample_frequency`), die I2S-Rate aus `microphone.sample_rate`.
 
 ---
 
@@ -67,7 +67,7 @@ esphome logs diag_full.yaml --device COM6          # Serielle Logs
 
 1. **Chip-Rev v1.0 (ECO1)** → `esp_audio_codec` auf `2.5.0` gepinnt (v2.6+ hard-failt bei Rev <3.0). Kein Upgrade auf 2.6.x, solange nicht bekannt ist, dass der Chip Rev≥3.0 ist.
 2. **Mic ist analog** (DSDIN GPIO9) → `use_microphone: false` in `diag_full.yaml` (verhindert PDM-Modus).
-3. **Mic-Samplerate bleibt 16 kHz** mono; Opus wird mit 16-kHz-Input encodiert, aber RTP-Clock ist **immer 48 kHz** (RFC 7587). Speaker-Pipeline bleibt 16 kHz (Opus-Decoder resampled intern auf 16 kHz).
+3. **Mic-Samplerate ist 8 kHz** mono (Fix für den wandernden ~1,5-kHz-Ton, s. §7.10); Opus wird mit 8-kHz-Input encodiert, RTP-Clock ist **immer 48 kHz** (RFC 7587; libopus resampled beim Decode intern auf 48 kHz → Frequenzen/Frequenzgang korrekt). Speaker-Pipeline bleibt 8 kHz. **Opus kennt keine 32 kHz** (nur 8/12/16/24/48 kHz) und es gibt keinen Resampler in der Sendekette → Mic-Rate muss der RTSP-Audio-Rate entsprechen.
 4. **go2rtc akzeptiert `a=sendrecv` nicht** in der Stream-Engine (matcht nur `recvonly`/`sendonly`). Daher: Audio-Sendetrack = `a=recvonly` (aus go2rtc-Sicht „go2rtc empfängt"), Backchannel-Track = `a=sendonly`.
 5. **go2rtc-Source nativ `rtsp://`**, NICHT `ffmpeg:` — der `ffmpeg:`-Prefix ließ ffmpeg PCMA (PT 8) wählen, während die Kamera nur Opus sendet → Audio-Stall.
 6. **Session-Limit 2** auf dem Gerät; ein verwaister ffmpeg-Prozess auf dem Host kann eine Session blockieren → „kein Bild/kein Ton".
@@ -81,7 +81,7 @@ esphome logs diag_full.yaml --device COM6          # Serielle Logs
 | Richtung | Codec | Details |
 |---|---|---|
 | Video (send) | **H.264 Constrained Baseline** | 800×800 @ ~35 fps, 2 Mbps, GOP 25, `profile-level-id=42001f` |
-| Audio Mic (send) | **Opus** | PT 111, `opus/48000/2`, Encoder 16 kHz mono VoIP 32 kbps, 20-ms-Frames, FEC on, `minptime=10;useinbandfec=1` |
+| Audio Mic (send) | **Opus** | PT 111, `opus/48000/2`, Encoder 8 kHz mono VoIP 32 kbps, 20-ms-Frames, FEC on, `minptime=10;useinbandfec=1` |
 | Audio Speaker (backchannel) | **PCMU / PCMA (G.711)** | PT 0/8, 8 kHz, 1 Kanal; Opus-Decode ebenfalls implementiert (PT 111) |
 | Legacy | L16 (PT 97) | Nur noch im Backchannel-Decoder-Pfad vorhanden, wird nicht mehr gesendet |
 
@@ -123,8 +123,8 @@ ffmpeg -rtsp_transport tcp -i "rtsp://127.0.0.1:8554/esp32p4_cam" -t 22 -c:a pcm
 py -m esptool --port COM6 chip-id
 ```
 
-- **Audio-Analyse (Host):** numpy/scipy-Skripte (FFT, RMS-Envelope, Band-Energien), Whisper (`base`-Modell) für Transkriptionsversuche. Bei sehr leisem Input (−45…−53 dB) halluziniert Whisper — Ergebnisse mit Konfidenz prüfen.
-- **Bekanntes Audio-Artefakt:** konstantes, schmalbandiges ~2-kHz-Band (−53 dB mean), leicht wandernd (1940–2040 Hz) → kein stabiler elektrischer Ton, vermutlich akustisches/analoges Umgebungsrauschen oder Netzbrummen-Harmonische; **kein I2S-Config-Bug**.
+- **Audio-Analyse (Host):** numpy/scipy-Skripte (FFT, RMS-Envelope, Band-Energien), Whisper (`base`-Modell) für Transkriptionsversuche. Bei sehr leisem Input (−45…−53 dB) halluziniert Whisper — Ergebnisse mit Konfidenz prüfen. Hinweis: die „dBFS“-Werte der Skripte sind relativ zu 1,0 (nicht Full-Scale) — die Vergleichslogik bleibt gültig (echte dBFS ≈ gemessen − 90,3 dB).
+- **Audio-Artefakt behoben (2026-08-07):** siehe §7.10 — Ursache war ein **sample-takt-gekoppeltes analoges Signal am Mic-Eingang** (nicht Akustik/Radio/Netz/Kamera), das bei 16 kHz als wandernder ~1,5-kHz-Ton im Sprachband lag. **Fix: 8-kHz-Samplerate** → Ton komplett weg, Sprachband flach (~−21…−24 dB), >4 kHz leer (−49 dB).
 
 ---
 
@@ -139,13 +139,19 @@ py -m esptool --port COM6 chip-id
 7. **Speaker-Mute (älter):** ESPHome-`es8311` ruft `set_mute_off()` nicht auf → `P4RtspStream::run_speaker_sequence_()` ruft explizit `set_mute_state(false)` + `set_volume(1.0f)`.
 8. **Mic-PDM (älter):** `use_microphone: false` → analoger Pfad statt PDM.
 9. **LWIP-Socket-Limit (älter):** `CONFIG_LWIP_MAX_SOCKETS=32` in `components/p4_rtsp/__init__.py`.
+10. **Mic-Gain übersteuert (76,5 dB):** PGA 30 dB (REG14) + ADC-Scale 42 dB (REG16) + ADC-Volume +4,5 dB (REG17) verstärkten Raum-/Radio-Audio und einen wandernden ~1,5-kHz-Ton auf sprachüberdeckendes Niveau. **Fix:** `mic_gain: 24DB` (REG16=0x04). PDM ist mit dem analogen Onboard-Mic **nicht** nutzbar (REG14 bit6 liefert Konstante −5504, vgl. `mic_test.wav` und ESPHome-Issue #17695).
+11. **Wandernder ~1,5-kHz-Ton (Root Cause):** Durch systematisches Ausschlussverfahren (16.08.: Mic abdecken, Radio an/aus, Batteriebetrieb, Kamera-Pipeline aus, PGA-Analogtest, Sample-Rate-Sweep) als **sample-takt-gekoppeltes analoges Signal am Mic-Eingang** identifiziert:
+    - **Skaliert 1:1 mit analogem PGA (REG14):** PGA 30 dB→6 dB → Ton von dominant (−10 dB Band) auf Rauschboden (−43 dB). → Signal liegt VOR dem ADC am MIC-Eingang, kein Codec-internes digitales Artefakt.
+    - **Skaliert mit Abtastrate:** 16 kHz → ~1,3–1,6 kHz (wandernd, 0 dB, **im Sprachband** → Maskierung); 24 kHz → ~9,5 kHz (über Sprache); 48 kHz → Töne bei 2,45 kHz (im Sprachband, −2 dB), 7,78 kHz (stabil) und ~10,7 kHz (dominant). 8 kHz → **kein Ton**.
+    - **Ausgeschlossen:** Akustik (Mic abgedeckt → unverändert), Radio-RF (an/aus → identisch), Netz/PSU (Batterie → identisch), Kamera/ISP/H.264 (`video:`-Block deaktiviert → identisch). Wahrscheinlicher Mechanismus: Clock-/Board-EMI (MCLK/BCLK/Regler-Burst) koppelt in MIC_P/MIC_N ein; Frequenz wandert mit Temperatur/PLL.
+    - **Fix:** alle vier Raten auf **8 kHz** (`es8311_dac`, `microphone`, `speaker`, `p4_rtsp.audio.sample_rate`) → Sprachband sauber, kein Ton, Rauschboden ~−21…−24 dB, >4 kHz leer. Bandbreite = 4 kHz (Telefonqualität, ausreichend für Sprache). Alternative: 24 kHz (12-kHz-Bandbreite, leiser 9,5-kHz-Pfeifton). **48 kHz abgelehnt** (2,45-kHz-Ton im Sprachband).
 
 ---
 
 ## 8. Offene Punkte / TODO
 
 - **Backchannel praktisch verifizieren:** Browser-Mikro über go2rtc-WebUI/WebRTC → Ton aus Speaker (Pfad ist eingerichtet, `senders: PCMU bytes>0` sollte nach Browser-Interaktion fließen).
-- **2-kHz-Rauschen reduzieren/identifizieren:** ggf. Mic-Gain, HP-Filter (ES8311 REG1C ADC EQ/HPF), oder prüfen ob es akustisch bedingt ist.
+- **Ton-Nachbau / Board-EMI:** Der wandernde Ton ist zwar mit 8 kHz behoben, aber die physikalische Quelle (Clock-/Regler-Kopplung in MIC_P/MIC_N) besteht weiter. Optional: MCLK-Multiple 256×→512× bei 16 kHz testen (Ton aus Sprachband schieben), Mic-Eingang schirmen oder DRE/HP-Filter im ES8311.
 - **Frigate-Integration testen:** `frigate.yml` liegt bereit; Opus-in-RTSP über ffmpeg (Frigate 0.14+) verifizieren.
 - **Board-Rev:** nur Chip-Rev (v1.0) auslesbar; Board-Revision hat kein ID-EEPROM.
 

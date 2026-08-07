@@ -53,6 +53,7 @@ api:
 
 web_server:
   port: 80
+  version: 3
 
 ota:
   - platform: esphome
@@ -66,7 +67,7 @@ audio_dac:
   - platform: es8311
     id: es8311_dac
     i2c_id: i2c_audio
-    sample_rate: 16000
+    sample_rate: 8000
     bits_per_sample: 16bit
     # IMPORTANT: use_microphone must stay false. When true, the ES8311
     # component sets REG14 BIT(6) which switches the codec into PDM digital
@@ -74,7 +75,10 @@ audio_dac:
     # produces all-zero samples. The analog mic path is enabled by default
     # (REG14 = 0x1A) even with use_microphone: false.
     use_microphone: false
-    mic_gain: 42DB
+    # Gain chain was maxed out (PGA 30dB + ADC-Scale 42dB + ADC-Volume +4.5dB
+    # ~= 76.5dB), which amplified room noise/whine to speech-masking levels.
+    # 24DB brings REG16 (ADC scale) back to the datasheet default (0x04).
+    mic_gain: 24DB
 
 i2s_audio:
   - id: i2s_audio_bus
@@ -88,7 +92,7 @@ microphone:
     i2s_audio_id: i2s_audio_bus
     i2s_din_pin: GPIO11  # ASDOUT from ES8311 - Microphone data input
     adc_type: external
-    sample_rate: 16000
+    sample_rate: 8000  # keep in sync: es8311_dac/mic/speaker/rtsp all 8k (kills 1.5k tone)
     bits_per_sample: 16bit
     channel: left
     # AGC (Automatic Gain Control) für bessere Audio-Qualität
@@ -101,7 +105,7 @@ speaker:
     i2s_dout_pin: GPIO9  # DSDIN to ES8311 - Speaker data output
     dac_type: external
     audio_dac: es8311_dac
-    sample_rate: 16000
+    sample_rate: 8000
     bits_per_sample: 16bit
     channel: mono
 
@@ -132,7 +136,7 @@ p4_rtsp:
   audio:
     microphone: mic
     speaker: spk
-    sample_rate: 16000
+    sample_rate: 8000
     channels: 1
     test_tone:
       name: "Audio Test-Ton"
