@@ -5,11 +5,22 @@
 #include <memory>
 #include <vector>
 
+#ifdef USE_MICROPHONE
 #include "esphome/components/microphone/microphone.h"
+#endif
+#ifdef USE_SPEAKER
 #include "esphome/components/speaker/speaker.h"
+#endif
 #include "esphome/core/component.h"
 
 namespace esphome {
+namespace microphone {
+class Microphone;
+}
+namespace speaker {
+class Speaker;
+}
+
 namespace p4_rtsp {
 
 class RtspServer;
@@ -85,6 +96,8 @@ class P4RtspStream : public Component {
   bool camera_running_{false};
   bool camera_failed_{false};
   bool mic_started_{false};
+  bool mic_configured_{false};
+  uint32_t mic_start_ms_{0};
   // While the speaker needs the shared I2S bus, loop() must not auto-restart
   // the always-on microphone (it would re-grab the bus during playback).
   bool speaker_active_{false};

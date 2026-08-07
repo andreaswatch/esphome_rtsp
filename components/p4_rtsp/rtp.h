@@ -92,6 +92,7 @@ class PCMAPacketizer {
   int input_sample_rate_{16000};
   int channels_{1};
   uint32_t timestamp_{0};
+  bool timestamp_initialized_{false};
 };
 
 // Opus (RFC 7587) packetizer. Accepts raw 16-bit little-endian PCM (as
@@ -120,12 +121,17 @@ class OpusPacketizer {
   int input_sample_rate_{16000};
   int channels_{1};
   uint32_t timestamp_{0};
+  bool timestamp_initialized_{false};
   static constexpr uint32_t timestamp_increment_ = 960;  // 20 ms @ 48 kHz
 
   void *enc_{nullptr};
   size_t frame_bytes_{0};
   std::vector<uint8_t> pcm_buf_;
   std::vector<uint8_t> enc_out_buf_;
+
+  float filter_hpf_y_{0.0f};
+  float filter_hpf_x_{0.0f};
+  float filter_lpf_y_{0.0f};
 };
 
 }  // namespace p4_rtsp

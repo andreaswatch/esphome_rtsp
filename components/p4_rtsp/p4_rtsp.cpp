@@ -8,6 +8,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "driver/ledc.h"
+#ifdef USE_MICROPHONE
+#include "esphome/components/microphone/microphone.h"
+#endif
+#ifdef USE_SPEAKER
+#include "esphome/components/speaker/speaker.h"
+#endif
 #include "camera_pipeline.h"
 #include "rtsp_server.h"
 
@@ -18,8 +25,35 @@ static const char *const TAG = "p4_rtsp";
 
 static const char *const COMPONENT_VERSION = "0.2.0-csi-direct";
 
+static void enable_es8311_mclk(int pin, int sample_rate) {
+  uint32_t mclk_freq = static_cast<uint32_t>(sample_rate) * 256;
+  ledc_timer_config_t ledc_timer = {};
+  ledc_timer.speed_mode = LEDC_LOW_SPEED_MODE;
+  ledc_timer.duty_resolution = LEDC_TIMER_1_BIT;
+  ledc_timer.timer_num = LEDC_TIMER_0;
+  ledc_timer.freq_hz = mclk_freq;
+  ledc_timer.clk_cfg = LEDC_AUTO_CLK;
+  ledc_timer_config(&ledc_timer);
+
+  ledc_channel_config_t ledc_channel = {};
+  ledc_channel.speed_mode = LEDC_LOW_SPEED_MODE;
+  ledc_channel.channel = LEDC_CHANNEL_0;
+  ledc_channel.timer_sel = LEDC_TIMER_0;
+  ledc_channel.intr_type = LEDC_INTR_DISABLE;
+  ledc_channel.gpio_num = pin;
+  ledc_channel.duty = 1;
+  ledc_channel.hpoint = 0;
+  ledc_channel_config(&ledc_channel);
+
+  ESP_LOGI("p4_rtsp", "Generated %u Hz MCLK on GPIO%d via LEDC hardware timer",
+           static_cast<unsigned>(mclk_freq), pin);
+}
+
 void P4RtspStream::setup() {
   ESP_LOGCONFIG(TAG, "Setting up P4RTSP stream");
+
+  // Output 2.048 MHz MCLK on GPIO13 for ES8311 codec
+  enable_es8311_mclk(13, this->audio_sample_rate_);
 
   this->server_ = std::make_unique<RtspServer>(
       this->port_, this->audio_sample_rate_, this->audio_channels_);
@@ -164,6 +198,7 @@ void P4RtspStream::speaker_play_(const uint8_t *pcm, size_t len) {
   }
 }
 
+#ifdef USE_SPEAKER
 void P4RtspStream::run_speaker_sequence_() {
   // The microphone holds the shared I2S bus. Stop it so the speaker can start,
   // wait for the speaker to actually run, play, then release the bus back to
@@ -270,6 +305,10 @@ void P4RtspStream::play_test_tone() {
                       samples.size() * 2);
   ESP_LOGI(TAG, "played test tone: %u samples", static_cast<unsigned>(n));
 }
+#else
+void P4RtspStream::run_speaker_sequence_() {}
+void P4RtspStream::play_test_tone() {}
+#endif
 
 bool P4RtspStream::has_active_stream() const {
   return this->server_ != nullptr && this->server_->has_clients();

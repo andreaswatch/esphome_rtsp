@@ -75,10 +75,9 @@ audio_dac:
     # produces all-zero samples. The analog mic path is enabled by default
     # (REG14 = 0x1A) even with use_microphone: false.
     use_microphone: false
-    # Gain chain was maxed out (PGA 30dB + ADC-Scale 42dB + ADC-Volume +4.5dB
-    # ~= 76.5dB), which amplified room noise/whine to speech-masking levels.
-    # 24DB brings REG16 (ADC scale) back to the datasheet default (0x04).
-    mic_gain: 24DB
+    # 30DB provides loud, clear voice volume. Bandpass filter in p4_rtsp
+    # handles out-of-band noise filtering.
+    mic_gain: 30DB
 
 i2s_audio:
   - id: i2s_audio_bus
@@ -111,9 +110,10 @@ speaker:
 
 switch:
   - platform: gpio
-    name: Speaker Enable
-    pin: GPIO53
+    name: "Verstärker NS4150B"
+    pin: GPIO47
     restore_mode: RESTORE_DEFAULT_ON
+    id: amp_switch
 
 external_components:
   - source: components

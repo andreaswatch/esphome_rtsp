@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
@@ -280,6 +281,12 @@ void PCMAPacketizer::set_input_sample_rate(int rate) {
 void PCMAPacketizer::set_channels(int channels) { this->channels_ = channels; }
 
 void PCMAPacketizer::push_pcm16(const uint8_t *data, size_t len) {
+  uint32_t current_wall_ts = static_cast<uint32_t>(millis()) * 8;
+  if (!this->timestamp_initialized_ ||
+      (current_wall_ts > this->timestamp_ && (current_wall_ts - this->timestamp_) > 800)) {
+    this->timestamp_ = current_wall_ts;
+    this->timestamp_initialized_ = true;
+  }
   // Downsample by taking every (input_rate/8000)th sample (assumes input rate
   // is an even multiple of 8000, e.g. 16000 -> every 2nd sample).
   const int decim = this->input_sample_rate_ / 8000;
@@ -362,7 +369,7 @@ bool OpusPacketizer::init_encoder_() {
   cfg.bitrate = 32000;
   cfg.frame_duration = ESP_OPUS_ENC_FRAME_DURATION_20_MS;
   cfg.application_mode = ESP_OPUS_ENC_APPLICATION_VOIP;
-  cfg.complexity = 2;
+  cfg.complexity = 8;
   cfg.enable_fec = true;
   cfg.enable_dtx = false;
   cfg.enable_vbr = false;
@@ -392,7 +399,33 @@ void OpusPacketizer::push_pcm16(const uint8_t *data, size_t len) {
   if (!this->init_encoder_()) {
     return;
   }
-  this->pcm_buf_.insert(this->pcm_buf_.end(), data, data + len);
+  uint32_t current_wall_ts = static_cast<uint32_t>(millis()) * 48;
+  if (!this->timestamp_initialized_ ||
+      (current_wall_ts > this->timestamp_ && (current_wall_ts - this->timestamp_) > 4800)) {
+    this->timestamp_ = current_wall_ts;
+    this->timestamp_initialized_ = true;
+  }
+  // Apply 150 Hz HPF + 3200 Hz LPF bandpass filter to eliminate out-of-band noise/EMI
+  std::vector<uint8_t> filtered_data(len);
+  const int16_t *src = reinterpret_cast<const int16_t *>(data);
+  int16_t *dst = reinterpret_cast<int16_t *>(filtered_data.data());
+  size_t num_samples = len / 2;
+  for (size_t i = 0; i < num_samples; i++) {
+    float x = static_cast<float>(src[i]);
+    // 150 Hz High-Pass Filter
+    float hpf_out = 0.8946f * (this->filter_hpf_y_ + x - this->filter_hpf_x_);
+    this->filter_hpf_x_ = x;
+    this->filter_hpf_y_ = hpf_out;
+
+    // 3200 Hz Low-Pass Filter
+    float lpf_out = this->filter_lpf_y_ + 0.7154f * (hpf_out - this->filter_lpf_y_);
+    this->filter_lpf_y_ = lpf_out;
+
+    if (lpf_out > 32767.0f) lpf_out = 32767.0f;
+    if (lpf_out < -32768.0f) lpf_out = -32768.0f;
+    dst[i] = static_cast<int16_t>(lpf_out);
+  }
+  this->pcm_buf_.insert(this->pcm_buf_.end(), filtered_data.begin(), filtered_data.end());
   while (this->pcm_buf_.size() >= this->frame_bytes_) {
     esp_audio_enc_in_frame_t in_frame;
     in_frame.buffer = this->pcm_buf_.data();
