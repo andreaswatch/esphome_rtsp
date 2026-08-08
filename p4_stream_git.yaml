@@ -145,7 +145,7 @@ external_components:
     components: [esp_audio_stack, esp_aec]
     refresh: 0s
   # p4_rtsp aus dem Git-Commit (muss zuerst nach GitHub gepusht werden!):
-  - source: github://andreaswatch/esphome_rtsp@17100e43d32f4a3d656a424ef1e7024d7e3ebdf2
+  - source: github://andreaswatch/esphome_rtsp@b31cd6ba3462d7b799b5993b6f42cdd710d66018
     components: [p4_rtsp]
 
 p4_rtsp:
