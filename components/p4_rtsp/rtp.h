@@ -15,7 +15,6 @@ static constexpr uint8_t RTP_PT_PCMU = 0;
 static constexpr uint8_t RTP_PT_PCMA = 8;
 static constexpr uint8_t RTP_PT_H264 = 96;
 static constexpr uint8_t RTP_PT_L16 = 97;
-static constexpr uint8_t RTP_PT_OPUS = 111;
 static constexpr uint32_t RTP_CLOCK_VIDEO = 90000;
 
 using RtpSendCallback = std::function<void(const uint8_t *data, size_t len)>;
@@ -66,72 +65,6 @@ class L16Packetizer {
   int sample_rate_{16000};
   int channels_{1};
   uint32_t timestamp_{0};
-};
-
-// G.711 A-law (PCMA) packetizer. Accepts raw 16-bit little-endian PCM (as
-// delivered by the I2S microphone) and emits 8-bit A-law RTP packets.
-// go2rtc / Frigate / WebRTC handle PCMA natively, unlike L16/s16be.
-class PCMAPacketizer {
- public:
-  PCMAPacketizer();
-  void set_send_callback(RtpSendCallback callback);
-  void set_ssrc(uint32_t ssrc);
-  void set_payload_type(uint8_t pt);
-  // Input sample rate of the raw PCM stream handed to push_pcm16.
-  void set_input_sample_rate(int rate);
-  void set_channels(int channels);
-  void push_pcm16(const uint8_t *data, size_t len);
-
-  uint16_t sequence_number() const { return this->seq_; }
-
- protected:
-  RtpSendCallback send_callback_;
-  uint32_t ssrc_{0};
-  uint8_t payload_type_{RTP_PT_PCMA};
-  uint16_t seq_{0};
-  int input_sample_rate_{16000};
-  int channels_{1};
-  uint32_t timestamp_{0};
-  bool timestamp_initialized_{false};
-};
-
-// Opus (RFC 7587) packetizer. Accepts raw 16-bit little-endian PCM (as
-// delivered by the I2S microphone) and emits Opus frames over RTP with a
-// 48 kHz clock. The Opus encoder comes from esp_audio_codec (prebuilt lib).
-class OpusPacketizer {
- public:
-  OpusPacketizer();
-  ~OpusPacketizer();
-  void set_send_callback(RtpSendCallback callback);
-  void set_ssrc(uint32_t ssrc);
-  void set_payload_type(uint8_t pt);
-  void set_input_sample_rate(int rate);
-  void set_channels(int channels);
-  void push_pcm16(const uint8_t *data, size_t len);
-
-  uint16_t sequence_number() const { return this->seq_; }
-
- protected:
-  bool init_encoder_();
-
-  RtpSendCallback send_callback_;
-  uint32_t ssrc_{0};
-  uint8_t payload_type_{RTP_PT_OPUS};
-  uint16_t seq_{0};
-  int input_sample_rate_{16000};
-  int channels_{1};
-  uint32_t timestamp_{0};
-  bool timestamp_initialized_{false};
-  static constexpr uint32_t timestamp_increment_ = 960;  // 20 ms @ 48 kHz
-
-  void *enc_{nullptr};
-  size_t frame_bytes_{0};
-  std::vector<uint8_t> pcm_buf_;
-  std::vector<uint8_t> enc_out_buf_;
-
-  float filter_hpf_y_{0.0f};
-  float filter_hpf_x_{0.0f};
-  float filter_lpf_y_{0.0f};
 };
 
 }  // namespace p4_rtsp

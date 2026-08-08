@@ -7,8 +7,6 @@
 #include <strings.h>
 
 #include "esp_heap_caps.h"
-#include "esp_audio_dec.h"
-#include "esp_opus_dec.h"
 
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
@@ -238,11 +236,11 @@ RtspSession::RtspSession(int fd, RtspServer *server)
   this->h264_.set_send_callback([this](const uint8_t *data, size_t len) {
     this->send_track_packet_(this->video_track_, data, len);
   });
-  this->opus_.set_ssrc(random_uint32());
-  this->opus_.set_payload_type(RTP_PT_OPUS);
-  this->opus_.set_input_sample_rate(this->server_->audio_sample_rate());
-  this->opus_.set_channels(this->server_->audio_channels());
-  this->opus_.set_send_callback([this](const uint8_t *data, size_t len) {
+  this->l16_.set_ssrc(random_uint32());
+  this->l16_.set_payload_type(RTP_PT_L16);
+  this->l16_.set_sample_rate(this->server_->audio_sample_rate());
+  this->l16_.set_channels(this->server_->audio_channels());
+  this->l16_.set_send_callback([this](const uint8_t *data, size_t len) {
     this->send_track_packet_(this->audio_track_, data, len);
   });
 
@@ -261,10 +259,6 @@ RtspSession::~RtspSession() {
   if (this->audio_track_.rtp_socket >= 0) {
     close(this->audio_track_.rtp_socket);
     this->audio_track_.rtp_socket = -1;
-  }
-  if (this->opus_dec_ != nullptr) {
-    esp_opus_dec_close(this->opus_dec_);
-    this->opus_dec_ = nullptr;
   }
 }
 
@@ -375,7 +369,7 @@ void RtspSession::sender_loop() {
     }
     if (!audio_chunk.empty()) {
       if (this->audio_track_.transport != TransportKind::NONE) {
-        this->opus_.push_pcm16(audio_chunk.data(), audio_chunk.size());
+        this->l16_.push_bytes(audio_chunk.data(), audio_chunk.size());
       }
       audio_chunk.clear();
     }
@@ -501,37 +495,6 @@ void RtspSession::handle_interleaved_(const uint8_t *header,
                         : static_cast<int32_t>(alaw_decode(u));
       decoded.push_back(static_cast<int16_t>(s));
       decoded.push_back(static_cast<int16_t>(s));
-    }
-  } else if (pt == RTP_PT_OPUS) {
-    if (this->opus_dec_ == nullptr) {
-      esp_opus_dec_cfg_t dcfg = ESP_OPUS_DEC_CONFIG_DEFAULT();
-      dcfg.sample_rate = ESP_AUDIO_SAMPLE_RATE_16K;
-      dcfg.channel = ESP_AUDIO_MONO;
-      dcfg.frame_duration = ESP_OPUS_DEC_FRAME_DURATION_INVALID;
-      dcfg.self_delimited = false;
-      esp_audio_err_t err =
-          esp_opus_dec_open(&dcfg, sizeof(dcfg), &this->opus_dec_);
-      if (err != ESP_AUDIO_ERR_OK || this->opus_dec_ == nullptr) {
-        ESP_LOGE(TAG, "Opus decoder open failed: %d", err);
-        this->opus_dec_ = nullptr;
-        return;
-      }
-      this->opus_pcm_buf_.resize(4096);
-    }
-    esp_audio_dec_in_raw_t raw;
-    raw.buffer = const_cast<uint8_t *>(payload);
-    raw.len = static_cast<uint32_t>(payload_len);
-    esp_audio_dec_out_frame_t out;
-    out.buffer = this->opus_pcm_buf_.data();
-    out.len = static_cast<uint32_t>(this->opus_pcm_buf_.size());
-    esp_audio_dec_info_t info;
-    esp_audio_err_t err = esp_opus_dec_decode(this->opus_dec_, &raw, &out, &info);
-    if (err == ESP_AUDIO_ERR_OK && out.decoded_size > 0) {
-      size_t samples = out.decoded_size / sizeof(int16_t);
-      decoded.assign(reinterpret_cast<int16_t *>(out.buffer),
-                     reinterpret_cast<int16_t *>(out.buffer) + samples);
-    } else {
-      return;
     }
   } else {
     return;
@@ -824,11 +787,12 @@ std::string RtspSession::build_sdp_(bool backchannel) const {
     }
     sdp += "\r\n";
   }
-  sdp += "m=audio 0 RTP/AVP 111 0 8\r\n";
+  // Audio TX (microphone -> client) as L16 at the configured sample rate.
+  sdp += "m=audio 0 RTP/AVP 97\r\n";
   sdp += "a=control:trackID=1\r\n";
   sdp += "a=recvonly\r\n";
-  sdp += "a=rtpmap:111 opus/48000/2\r\n";
-  sdp += "a=fmtp:111 minptime=10;useinbandfec=1\r\n";
+  sdp += "a=rtpmap:97 L16/" + to_string(this->server_->audio_sample_rate()) +
+         "/" + to_string(this->server_->audio_channels()) + "\r\n";
   if (backchannel) {
     // Backchannel: camera receives audio (go2rtc sends to speaker).
     sdp += "m=audio 0 RTP/AVP 0 8\r\n";

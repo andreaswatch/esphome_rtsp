@@ -1,0 +1,170 @@
+# =============================================================================
+# ESP32-P4 RTSP Stream (audio stack + AEC + OV5647 H.264)
+#
+# Audio backend: esp_audio_stack (full-duplex, shared ES8311 bus) + esp_aec
+#   - bus:     48 kHz / 32-bit / mono, shared by mic + speaker
+#   - mic out: 16 kHz s16 mono (post-AEC)  -> RTSP L16 track
+#   - speaker: resampler 16k->48k, fed by RTSP backchannel (PCMU/PCMA) + test tone
+# Camera:      OV5647 MIPI-CSI -> H.264 -> RTSP
+# RTSP:        rtsp://<ip>:554/live  (+ ?backchannel=1 for two-way audio)
+#
+# Component sources:
+#   - esp_audio_stack + esp_aec: github://n-IA-hane/esphome-audio-stack@v2026.7.0
+#   - p4_rtsp:                    local components/
+# =============================================================================
+
+substitutions:
+  name: p4-rtsp-cam
+  friendly_name: P4 RTSP Camera
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2026.6.5
+
+esp32:
+  variant: esp32p4
+  flash_size: 16MB
+  cpu_frequency: 360MHz
+  framework:
+    type: esp-idf
+    components:
+      - name: espressif/esp_video
+        ref: "^0.8.0"
+      - name: espressif/esp_h264
+        ref: "^1.3.0"
+    advanced:
+      enable_idf_experimental_features: true
+
+esp32_hosted:
+  variant: ESP32C6
+  reset_pin: GPIO54
+  cmd_pin: GPIO19
+  clk_pin: GPIO18
+  d0_pin: GPIO14
+  d1_pin: GPIO15
+  d2_pin: GPIO16
+  d3_pin: GPIO17
+  active_high: true
+  use_psram: true
+  slot: 1
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+psram:
+  mode: hex
+  speed: 200MHz
+
+logger:
+  level: INFO
+  hardware_uart: USB_SERIAL_JTAG
+  logs:
+    ISP: NONE
+
+api:
+
+web_server:
+  port: 80
+
+ota:
+  - platform: esphome
+
+i2c:
+  - id: i2c_audio
+    sda: GPIO7
+    scl: GPIO8
+    frequency: 400kHz
+
+# ---------------------------------------------------------------------------
+# Audio: full-duplex ES8311 codec on a shared I2S bus.
+#   MCLK=GPIO13  BCLK=GPIO12  LRCLK=GPIO10  DIN=GPIO11 (mic)  DOUT=GPIO9 (spk)
+# ---------------------------------------------------------------------------
+
+esp_aec:
+  id: aec_processor
+  sample_rate: 16000
+  mode: sr_low_cost
+
+esp_audio_stack:
+  id: audio_stack
+  processor_id: aec_processor
+  # Bus auf 16 kHz/16-bit: die AEC arbeitet ohnehin bei 16 kHz, und der
+  # Speaker spielt auf Bus-Rate. Damit gibt es keinerlei Ratenkonvertierung
+  # und unsere RTSP-Backchannel-Daten (16 kHz) passen 1:1 auf den Speaker.
+  sample_rate: 16000
+  bits_per_sample: 16
+  slot_bit_width: 16
+
+  i2s_mclk_pin: GPIO13
+  i2s_bclk_pin: GPIO12
+  i2s_lrclk_pin: GPIO10
+  i2s_din_pin: GPIO11
+  i2s_dout_pin: GPIO9
+
+  # Software AEC reference derived from the speaker playback path. Works on any
+  # wiring; upgrade to the ES8311 stereo DAC feedback topology if needed.
+  aec_reference: previous_frame
+
+  codec:
+    input:
+      type: es8311
+      address: 0x18
+      # Max analog ADC gain so the (analog) board mic is not too quiet.
+      gain_db: 37.5
+    output:
+      type: es8311
+      address: 0x18
+
+# Post-AEC microphone surface at 16 kHz s16 mono (same as bus rate).
+microphone:
+  - platform: esp_audio_stack
+    id: clean_mic
+    esp_audio_stack_id: audio_stack
+
+# Hardware speaker surface: plays at bus rate (16 kHz), exactly what the
+# RTSP backchannel (PCMU/PCMA, upsampled to 16 kHz) and test tone feed it.
+speaker:
+  - platform: esp_audio_stack
+    id: hw_speaker
+    esp_audio_stack_id: audio_stack
+    buffer_duration: 500ms
+
+# Speaker amp enable (Waveshare P4 board, GPIO53).
+switch:
+  - platform: gpio
+    name: Speaker Enable
+    id: speaker_enable
+    pin: GPIO53
+    restore_mode: ALWAYS_ON
+
+external_components:
+  - source: github://n-IA-hane/esphome-audio-stack@v2026.7.0
+    components: [esp_audio_stack, esp_aec]
+    refresh: 0s
+  - source: components
+    components: [p4_rtsp]
+    refresh: 0s
+
+p4_rtsp:
+  port: 554
+  video:
+    resolution: 800x800
+    fps: 25
+    bitrate: 2000000
+    gop: 25
+    always_on: true
+    sccb_sda: 7
+    sccb_scl: 8
+    xclk_pin: 40
+    data_lanes: 2
+    power_down_pin: 27
+  audio:
+    microphone: clean_mic
+    speaker: hw_speaker
+    sample_rate: 16000
+    channels: 1
+    test_tone:
+      name: "Audio Test-Ton"
+      icon: "mdi:volume-high"
