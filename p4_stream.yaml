@@ -21,6 +21,14 @@ esphome:
   name: ${name}
   friendly_name: ${friendly_name}
   min_version: 2026.6.5
+  on_boot:
+    - priority: -200
+      then:
+        # ES8311-Codec früh über I2C öffnen (GPIO7/8), BEVOR die Kamera ihre
+        # SCCB-Init auf den gleichen Pins macht. Der Audio-Stack öffnet den
+        # Codec sonst lazy beim ersten Mic-Consumer — genau dann, wenn die
+        # Kamera die SCCB-Pins belegt → "ES8311: Open fail" / I2C-Timeout.
+        - esp_audio_stack.start: audio_stack
 
 esp32:
   variant: esp32p4
