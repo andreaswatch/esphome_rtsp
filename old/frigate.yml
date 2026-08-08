@@ -1,0 +1,91 @@
+# Frigate Konfiguration für ESP32-P4 RTSP Camera
+# Speichern als: frigate.yml oder config.yml
+
+# go2rtc Integration
+go2rtc:
+  streams:
+    esp32p4_cam:
+      # Video vom ESP32-P4
+      - rtsp://192.168.178.196:554/live?backchannel=1#video=h264#tcp
+      # Audio mit FFmpeg transcodieren: L16 -> PCMA (G.711 A-law)
+      - ffmpeg:rtsp://192.168.178.196:554/live#audio=pcma#backchannel=pcma#tcp
+
+# Kamera Konfiguration
+cameras:
+  esp32p4_cam:
+    enabled: true
+    
+    # ffmpeg Konfiguration
+    ffmpeg:
+      inputs:
+        # Hauptstream über go2rtc (empfohlen für Two-Way Audio)
+        - path: rtsp://127.0.0.1:8554/esp32p4_cam
+          roles:
+            - record
+            - detect
+            - audio
+    
+    # Audio Konfiguration für Two-Way Audio
+    audio:
+      enabled: true
+      # Mikrofon-Eingabe vom ESP (Audio-Stream)
+      listen:
+        - esp32p4_cam
+      # Rückkanal zum ESP (Speaker)
+      output:
+        - path: rtsp://192.168.178.196:554/live?backchannel=1
+          codec: pcma  # G.711 A-law für Rückkanal
+    
+    # Detect Konfiguration
+    detect:
+      enabled: true
+      width: 800
+      height: 800
+      fps: 25
+    
+    # Record Konfiguration
+    record:
+      enabled: true
+      retain:
+        days: 7
+        mode: all
+      events:
+        retain:
+          default: 30
+          mode: motion
+    
+    # Motion Detection
+    motion:
+      threshold: 25
+      contour_area: 10
+      delta_alpha: 0.2
+      frame_alpha: 0.2
+      frame_height: 50
+      improve_contrast: true
+    
+    # Objects Detection
+    objects:
+      track:
+        - person
+        - car
+        - dog
+        - cat
+
+# MQTT Konfiguration (optional, für Home Assistant Integration)
+mqtt:
+  host: 192.168.178.X  # IP deines MQTT Brokers
+  # user: your_username
+  # password: your_password
+
+# Detectors (optional, für Object Detection)
+detectors:
+  cpu1:
+    type: cpu
+    num_threads: 3
+
+# Logger
+logger:
+  default: info
+  logs:
+    frigate.video: info
+    frigate.audio: debug  # Audio-Logging für Debugging

@@ -1,0 +1,111 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+#ifdef USE_MICROPHONE
+#include "esphome/components/microphone/microphone.h"
+#endif
+#ifdef USE_SPEAKER
+#include "esphome/components/speaker/speaker.h"
+#endif
+#include "esphome/core/component.h"
+
+namespace esphome {
+namespace microphone {
+class Microphone;
+}
+namespace speaker {
+class Speaker;
+}
+
+namespace p4_rtsp {
+
+class RtspServer;
+class CameraPipeline;
+
+class P4RtspStream : public Component {
+ public:
+  void setup() override;
+  void loop() override;
+  float get_setup_priority() const override;
+  void dump_config() override;
+
+  void set_port(uint16_t port) { this->port_ = port; }
+  void set_video_enabled(bool enabled) { this->video_enabled_ = enabled; }
+  void set_video_resolution(int width, int height) {
+    this->video_width_ = width;
+    this->video_height_ = height;
+  }
+  void set_video_fps(int fps) { this->video_fps_ = fps; }
+  void set_video_bitrate(int bitrate) { this->video_bitrate_ = bitrate; }
+  void set_video_gop(int gop) { this->video_gop_ = gop; }
+  void set_camera_pins(int sda, int scl, int xclk, int lanes) {
+    this->sccb_sda_ = sda;
+    this->sccb_scl_ = scl;
+    this->xclk_pin_ = xclk;
+    this->data_lanes_ = lanes;
+  }
+  void set_camera_power_down_pin(int pin) { this->camera_power_down_pin_ = pin; }
+  void set_video_always_on(bool always_on) { this->video_always_on_ = always_on; }
+  void set_microphone(microphone::Microphone *microphone) { this->microphone_ = microphone; }
+  void set_speaker(speaker::Speaker *speaker) { this->speaker_ = speaker; }
+  void set_audio_sample_rate(int sample_rate) { this->audio_sample_rate_ = sample_rate; }
+  void set_audio_channels(int channels) { this->audio_channels_ = channels; }
+
+  bool has_active_stream() const;
+
+  // Play a short click test tone on the speaker. Stops the microphone first so
+  // it releases the shared I2S bus (mic + speaker cannot run simultaneously).
+  void play_test_tone();
+
+ protected:
+  void start_streaming_();
+  void stop_streaming_();
+  void on_audio_bytes_(const std::vector<uint8_t> &data);
+  void on_backchannel_audio_(const int16_t *data, size_t samples);
+  void speaker_play_(const uint8_t *pcm, size_t len);
+  void run_speaker_sequence_();
+  static void speaker_task_wrapper(void *param);
+
+  uint16_t port_{554};
+  bool video_enabled_{false};
+  int video_width_{1280};
+  int video_height_{720};
+  int video_fps_{25};
+  int video_bitrate_{4000000};
+  int video_gop_{25};
+  int sccb_sda_{7};
+  int sccb_scl_{8};
+  int xclk_pin_{40};
+  int data_lanes_{2};
+  int camera_power_down_pin_{-1};
+  bool video_always_on_{false};
+  microphone::Microphone *microphone_{nullptr};
+  speaker::Speaker *speaker_{nullptr};
+  int audio_sample_rate_{16000};
+  int audio_channels_{1};
+
+  std::vector<uint8_t> backchannel_samples_;
+  std::vector<uint8_t> speaker_audio_;
+  std::unique_ptr<RtspServer> server_;
+  std::unique_ptr<CameraPipeline> camera_;
+  bool server_started_{false};
+  bool camera_running_{false};
+  bool camera_failed_{false};
+  bool mic_started_{false};
+  bool mic_configured_{false};
+  uint32_t mic_start_ms_{0};
+  // While the speaker needs the shared I2S bus, loop() must not auto-restart
+  // the always-on microphone (it would re-grab the bus during playback).
+  bool speaker_active_{false};
+  // Set while a speaker playback task is running, so play requests are dropped
+  // instead of queued while the bus is busy.
+  bool speaker_busy_{false};
+  uint32_t last_version_log_ms_{0};
+};
+
+}  // namespace p4_rtsp
+}  // namespace esphome
