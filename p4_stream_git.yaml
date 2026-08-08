@@ -144,9 +144,9 @@ external_components:
   - source: github://n-IA-hane/esphome-audio-stack@v2026.7.0
     components: [esp_audio_stack, esp_aec]
     refresh: 0s
-  - source: components
+  # p4_rtsp aus dem Git-Commit (muss zuerst nach GitHub gepusht werden!):
+  - source: github://andreaswatch/esphome_rtsp@17100e43d32f4a3d656a424ef1e7024d7e3ebdf2
     components: [p4_rtsp]
-    refresh: 0s
 
 p4_rtsp:
   port: 554
