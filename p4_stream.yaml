@@ -28,6 +28,11 @@ esp32:
   cpu_frequency: 360MHz
   framework:
     type: esp-idf
+    # Muss hier als user-provided stehen: ESPHome überschreibt per
+    # add_idf_sdkconfig_option() gesetzte LWIP-Socket-Werte automatisch.
+    # RTSP-Server nutzt rohe LWIP-Sockets, die ESPHome nicht mitzählt.
+    sdkconfig_options:
+      CONFIG_LWIP_MAX_SOCKETS: "32"
     components:
       - name: espressif/esp_video
         ref: "^0.8.0"
