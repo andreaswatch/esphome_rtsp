@@ -35,6 +35,13 @@ class TestAudioOps(unittest.TestCase):
         p2 = p.pack(b"\x00\x01")
         self.assertEqual(p2[2:4], (1).to_bytes(2, "big"))            # seq incremented
 
+    def test_rtp_ts_wraps(self):
+        p = RtpPacker(pt=97, ssrc=1)
+        p.ts = 0xFFFFFEC0
+        pkt = p.pack(b"\x00" * 640)
+        self.assertEqual(p.ts, 0)                       # wrapped at 2^32
+        self.assertEqual(int.from_bytes(pkt[4:8], "big"), 0xFFFFFEC0)
+
 
 class TestWaveToPcm(unittest.TestCase):
     def test_wave_to_pcm_16000(self):

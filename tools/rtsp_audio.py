@@ -1,4 +1,3 @@
-import math
 import random
 import struct
 import wave
@@ -56,7 +55,7 @@ class RtpPacker:
         header[4:8] = self.ts.to_bytes(4, "big")
         header[8:12] = self.ssrc.to_bytes(4, "big")
         self.seq = (self.seq + 1) & 0xFFFF
-        self.ts += len(chunk) // 2
+        self.ts = (self.ts + len(chunk) // 2) & 0xFFFFFFFF
         return bytes(header) + chunk
 
 
