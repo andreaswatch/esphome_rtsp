@@ -1,6 +1,7 @@
 #include "rtsp_server.h"
 
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -760,7 +761,6 @@ std::string RtspSession::build_sdp_(bool backchannel) const {
     sdp += "m=video 0 RTP/AVP 96\r\n";
     sdp += "a=control:trackID=0\r\n";
     sdp += "a=rtpmap:96 H264/90000\r\n";
-    sdp += "a=fmtp:96 packetization-mode=1;profile-level-id=42001f";
     // Copy SPS/PPS under lock to avoid race with the camera frame thread.
     std::vector<uint8_t> sps, pps;
     {
@@ -779,8 +779,18 @@ std::string RtspSession::build_sdp_(bool backchannel) const {
       static const uint8_t default_pps[] = {0x68, 0xce, 0x09, 0xc8};
       pps.assign(default_pps, default_pps + sizeof(default_pps));
     }
-    ESP_LOGI("p4_rtsp.sdp", "DESCRIBE: sps=%u pps=%u bytes",
-             (unsigned)sps.size(), (unsigned)pps.size());
+    // Derive profile-level-id from the actual encoder SPS (bytes 1..3), not a
+    // hardcoded guess. WebRTC clients match the negotiated profile against the
+    // in-band SPS; a mismatch makes them refuse to decode (black video).
+    std::string profile_level_id = "42001f";
+    if (sps.size() >= 4) {
+      char buf[7];
+      snprintf(buf, sizeof(buf), "%02x%02x%02x", sps[1], sps[2], sps[3]);
+      profile_level_id = buf;
+    }
+    sdp += "a=fmtp:96 packetization-mode=1;profile-level-id=" + profile_level_id;
+    ESP_LOGI("p4_rtsp.sdp", "DESCRIBE: sps=%u pps=%u bytes, profile-level-id=%s",
+             (unsigned)sps.size(), (unsigned)pps.size(), profile_level_id.c_str());
     if (!sps.empty() && !pps.empty()) {
       sdp += ";sprop-parameter-sets=" + base64_encode(sps.data(), sps.size()) +
              "," + base64_encode(pps.data(), pps.size());

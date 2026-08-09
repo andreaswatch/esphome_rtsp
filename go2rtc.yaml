@@ -1,14 +1,25 @@
-# go2rtc für die ESP32-P4 RTSP Cam.
-# Audio: L16 (s16be) vom ESP -> nativ von go2rtc unterstützt.
-# Two-Way: ?backchannel=1 schaltet den Rückkanal (PCMU/PCMA) frei.
+# go2rtc für die ESP32-P4 RTSP Cam (Mic / Speaker / Video zwei-Wege-Audio).
 #
-# Optional für WebRTC/Browser-Audio (L16 ist kein Browser-Codec), falls nötig:
-#   esp32p4_cam_web:
-#     - ffmpeg:rtsp://192.168.178.196:554/live#video=copy#audio=opus
+# Der ESP bietet pro RTSP-Session mit ?backchannel=1 an:
+#   trackID=0  video   H264
+#   trackID=1  audio   L16/16000/1   (Mic -> Client, recvonly)
+#   trackID=2  audio   PCMU/PCMA 8000 (Client -> Speaker, sendonly)
+#
+# go2rtc handhabt automatisch:
+#   - L16 (Mic) -> PCMA/8000 für WebRTC-Browser (eingebauter Resampler)
+#   - Browser-Mikro (WebRTC) -> PCMA/8000 an trackID=2 (Rückkanal/Speaker)
+#   - H264 Video wird im Browser nativ abgespielt
+#
+# NICHT für mehrere Quellen desselben Streams gleichzeitig backchannel=1 setzen
+# (go2rtc darf den Rückkanal nur einmal pro Stream anfordern).
 
 streams:
   esp32p4_cam:
+    # #tcp erzwingt TCP-RTSP (stabil, auch über schlechteres WLAN)
     - rtsp://192.168.178.196:554/live?backchannel=1#tcp
+    # Optional: zweite Quelle für höhere Browser-Audioqualität (OPUS 48k).
+    # Rückkanal bleibt über die native Quelle oben aktiv -> hier backchannel=0!
+    # - ffmpeg:rtsp://192.168.178.196:554/live?backchannel=0#video=copy#audio=opus
 
 api:
   listen: :1984

@@ -22,12 +22,13 @@ esphome:
   friendly_name: ${friendly_name}
   min_version: 2026.6.5
   on_boot:
-    - priority: -200
+    # Priority 220 > AFTER_WIFI (200): muss VOR p4_rtsp.setup() laufen, damit
+    # der Audio-Stack den ES8311 über I2C (GPIO7/8) öffnet, BEVOR die Kamera
+    # ihre SCCB-Init auf den gleichen Pins macht. Sonst öffnet der Stack den
+    # Codec lazy beim ersten Mic-Consumer — genau dann, wenn die Kamera die
+    # SCCB-Pins belegt → "ES8311: Open fail" / I2C-Timeout.
+    - priority: 220
       then:
-        # ES8311-Codec früh über I2C öffnen (GPIO7/8), BEVOR die Kamera ihre
-        # SCCB-Init auf den gleichen Pins macht. Der Audio-Stack öffnet den
-        # Codec sonst lazy beim ersten Mic-Consumer — genau dann, wenn die
-        # Kamera die SCCB-Pins belegt → "ES8311: Open fail" / I2C-Timeout.
         - esp_audio_stack.start: audio_stack
 
 esp32:
@@ -152,6 +153,40 @@ switch:
     id: speaker_enable
     pin: GPIO53
     restore_mode: ALWAYS_ON
+
+    #reboot device
+  - platform: restart
+    name: "Reboot"
+
+debug:
+  update_interval: 5s
+
+sensor:
+  - platform: uptime
+    name: Uptime
+    update_interval: 5s
+
+  - platform: wifi_signal # Reports the WiFi signal strength/RSSI in dB
+    name: "WiFi Signal dB"
+    id: wifi_signal_db
+    update_interval: 120s
+    entity_category: "diagnostic"
+
+  - platform: copy 
+    source_id: wifi_signal_db
+    name: "WiFi Signal %"
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: "%"
+    entity_category: "diagnostic"
+
+
+text_sensor:
+  - platform: debug
+    device:
+      name: "Device Info"
+    reset_reason:
+      name: "Reset Reason"
 
 external_components:
   - source: github://n-IA-hane/esphome-audio-stack@v2026.7.0

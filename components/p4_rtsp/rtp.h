@@ -34,10 +34,10 @@ class H264Packetizer {
   uint32_t ssrc() const { return this->ssrc_; }
 
  protected:
-  void send_nal_(const uint8_t *nal, size_t len, uint32_t ts);
+  void send_nal_(const uint8_t *nal, size_t len, uint32_t ts, bool is_last);
   void send_stapa_(std::vector<std::pair<const uint8_t *, size_t>> nals, uint32_t ts);
   void send_single_(const uint8_t *nal, size_t len, uint32_t ts, bool marker);
-  void send_fua_(const uint8_t *nal, size_t len, uint32_t ts);
+  void send_fua_(const uint8_t *nal, size_t len, uint32_t ts, bool is_last);
 
   RtpSendCallback send_callback_;
   uint32_t ssrc_{0};
