@@ -73,41 +73,13 @@ void P4RtspStream::loop() {
     ESP_LOGI(TAG, "p4_rtsp component %s running (built %s %s)",
              COMPONENT_VERSION, __DATE__, __TIME__);
   }
-  if (this->video_always_on_) {
-    this->start_streaming_();
-    return;
-  }
-  bool rtsp_active = this->server_started_ && this->server_->has_clients();
-  if (rtsp_active) {
-    this->start_streaming_();
-  } else if (this->camera_running_ || this->mic_started_) {
-    this->stop_streaming_();
-  }
+  this->update_streams_();
 }
 
 void P4RtspStream::start_streaming_() {
-  if (!this->camera_running_ && this->camera_ != nullptr &&
-      !this->camera_failed_) {
-    if (!this->camera_->starting() && !this->camera_->running()) {
-      // Launch the (potentially slow) sensor/ISP/CSI setup in its own task so
-      // loopTask never trips the watchdog.
-      this->camera_->start_async();
-    }
-    if (this->camera_->running()) {
-      this->camera_running_ = true;
-      ESP_LOGI(TAG, "Camera pipeline started");
-    } else if (!this->camera_->starting()) {
-      // Start task ran and did not end in a running pipeline → permanent
-      // failure.
-      this->camera_failed_ = true;
-      ESP_LOGE(TAG, "Camera pipeline failed to start");
-    }
-  }
-  if (!this->mic_started_ && this->microphone_ != nullptr) {
-    this->microphone_->start();
-    this->mic_started_ = true;
-    ESP_LOGI(TAG, "Microphone started");
-  }
+  // Legacy entry point kept as a full-on switch; stream gating happens in
+  // update_streams_().
+  this->update_streams_();
 }
 
 void P4RtspStream::stop_streaming_() {
@@ -124,6 +96,72 @@ void P4RtspStream::stop_streaming_() {
   }
 }
 
+void P4RtspStream::update_streams_() {
+  const bool active =
+      this->video_always_on_ ||
+      (this->server_started_ && this->server_->has_clients());
+
+  // Camera / H.264 video track.
+  const bool want_camera =
+      active && this->video_enabled_ && this->video_stream_enabled_ &&
+      this->camera_ != nullptr;
+  if (want_camera) {
+    if (!this->camera_running_ && !this->camera_failed_) {
+      // Launch the (potentially slow) sensor/ISP/CSI setup in its own task so
+      // loopTask never trips the watchdog.
+      if (!this->camera_->starting() && !this->camera_->running()) {
+        this->camera_->start_async();
+      }
+      if (this->camera_->running()) {
+        this->camera_running_ = true;
+        ESP_LOGI(TAG, "Camera pipeline started");
+      } else if (!this->camera_->starting()) {
+        // Start task ran and did not end in a running pipeline → permanent
+        // failure.
+        this->camera_failed_ = true;
+        ESP_LOGE(TAG, "Camera pipeline failed to start");
+      }
+    }
+  } else if (this->camera_running_) {
+    this->camera_->stop();
+    this->camera_running_ = false;
+    this->camera_failed_ = false;
+    ESP_LOGI(TAG, "Camera pipeline stopped");
+  }
+
+  // Microphone (16 kHz post-AEC → RTSP L16 track).
+  const bool want_mic =
+      active && this->mic_stream_enabled_ && this->microphone_ != nullptr;
+  if (want_mic) {
+    if (!this->mic_started_) {
+      this->microphone_->start();
+      this->mic_started_ = true;
+      ESP_LOGI(TAG, "Microphone started");
+    }
+  } else if (this->mic_started_) {
+    this->microphone_->stop();
+    this->mic_started_ = false;
+    ESP_LOGI(TAG, "Microphone stopped");
+  }
+}
+
+void P4RtspStream::set_video_stream_enabled(bool enabled) {
+  this->video_stream_enabled_ = enabled;
+  this->update_streams_();
+  ESP_LOGI(TAG, "Video stream %s", enabled ? "enabled" : "disabled");
+}
+
+void P4RtspStream::set_mic_stream_enabled(bool enabled) {
+  this->mic_stream_enabled_ = enabled;
+  this->update_streams_();
+  ESP_LOGI(TAG, "Mic stream %s", enabled ? "enabled" : "disabled");
+}
+
+void P4RtspStream::set_speaker_enabled(bool enabled) {
+  this->speaker_enabled_ = enabled;
+  ESP_LOGI(TAG, "Speaker %s", enabled ? "enabled" : "disabled");
+}
+
 void P4RtspStream::on_audio_bytes_(const std::vector<uint8_t> &data) {
   if (this->server_ != nullptr && !data.empty()) {
     this->server_->push_audio_data(data.data(), data.size());
@@ -131,7 +169,7 @@ void P4RtspStream::on_audio_bytes_(const std::vector<uint8_t> &data) {
 }
 
 void P4RtspStream::on_backchannel_audio_(const int16_t *data, size_t samples) {
-  if (this->speaker_ == nullptr || samples == 0) {
+  if (this->speaker_ == nullptr || samples == 0 || !this->speaker_enabled_) {
     return;
   }
   // Full-duplex audio stack: no bus arbitration needed, just feed the
@@ -147,8 +185,8 @@ void P4RtspStream::on_backchannel_audio_(const int16_t *data, size_t samples) {
 }
 
 void P4RtspStream::play_test_tone() {
-  if (this->speaker_ == nullptr) {
-    ESP_LOGE(TAG, "no speaker configured");
+  if (this->speaker_ == nullptr || !this->speaker_enabled_) {
+    ESP_LOGW(TAG, "no speaker configured or speaker disabled");
     return;
   }
   // "Ding-Dong" chime, ~3 s total. Each note is a bell-like decaying tone with

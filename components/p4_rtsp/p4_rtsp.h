@@ -61,9 +61,17 @@ class P4RtspStream : public Component {
   // full-duplex, so the microphone can keep running while the tone plays.
   void play_test_tone();
 
+  // Runtime on/off switches for the individual streams (video, mic, speaker).
+  // Used to drop the camera/audio load before an OTA flash (the flash erase
+  // hangs while the H.264 encoder/ISP and audio stack are running).
+  void set_video_stream_enabled(bool enabled);
+  void set_mic_stream_enabled(bool enabled);
+  void set_speaker_enabled(bool enabled);
+
  protected:
   void start_streaming_();
   void stop_streaming_();
+  void update_streams_();
   void on_audio_bytes_(const std::vector<uint8_t> &data);
   void on_backchannel_audio_(const int16_t *data, size_t samples);
 
@@ -93,6 +101,10 @@ class P4RtspStream : public Component {
   bool camera_failed_{false};
   bool mic_started_{false};
   uint32_t last_version_log_ms_{0};
+
+  bool video_stream_enabled_{true};
+  bool mic_stream_enabled_{true};
+  bool speaker_enabled_{true};
 };
 
 }  // namespace p4_rtsp

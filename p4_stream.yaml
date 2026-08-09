@@ -49,6 +49,12 @@ esp32:
         ref: "^1.3.0"
     advanced:
       enable_idf_experimental_features: true
+      # OTA-Rollback deaktivieren: Der esp_ota_mark_app_valid_cancel_rollback()-
+      # Flash-Write schlägt unter Kamera/Audio-Last fehl, das pending-verify-Flag
+      # bleibt gesetzt und der Bootloader rollt jede OTA-Firmware nach dem ersten
+      # Reset wieder zurück. Ohne Bootloader-Rollback bootet das Gerät nach OTA
+      # immer das neue Image (stabil, kein Crash-Loop beobachtet).
+      enable_ota_rollback: false
 
 esp32_hosted:
   variant: ESP32C6
@@ -158,6 +164,13 @@ switch:
   - platform: restart
     name: "Reboot"
 
+# Enter safe mode (WiFi + OTA + web_server only, no camera/audio/RTSP) on the
+# next boot. The only reliable way to OTA on this board (camera/audio load
+# blocks the OTA flash erase in normal mode).
+button:
+  - platform: safe_mode
+    name: "Restart in Safe Mode"
+
 debug:
   update_interval: 5s
 
@@ -216,4 +229,16 @@ p4_rtsp:
     channels: 1
     test_tone:
       name: "Audio Test-Ton"
+      icon: "mdi:volume-high"
+  # Per-Stream-Schalter: erlauben, Kamera/Mic/Speaker einzeln zu stoppen.
+  # Wichtig für OTA: Kamera + Mic aus -> Flash-Erase hängt nicht mehr.
+  streams:
+    video:
+      name: "Video Stream"
+      icon: "mdi:video"
+    mic:
+      name: "Mic Stream"
+      icon: "mdi:microphone"
+    speaker:
+      name: "Speaker"
       icon: "mdi:volume-high"

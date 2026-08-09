@@ -53,10 +53,28 @@ Gerät: `192.168.178.196` (RTSP 554, Web 80, API/OTA 3232).
 ## Hardware-Testplan (nach Flash)
 
 1. Boot-Log prüfen: `p4_rtsp component 0.3.0-audio-stack running`, Audio-Stack-Zustände `idle/mic/duplex`.
-2. **Speaker:** "Audio Test-Ton"-Button im Web-UI (Port 80) -> Ton hörbar, Mic darf weiter laufen (Duplex).
+2. **Speaker:** "Audio Test-Ton"-Button im Web-UI (Port 80) -> 3 s Ding-Dong, Mic darf weiter laufen (Duplex).
 3. **Mic/AEC:** `ffmpeg -rtsp_transport tcp -i rtsp://192.168.178.196:554/live -map 0:a:0 -t 5 -af volumedetect -f null -` -> nicht mehr -0 dB, hörbarer Pegel.
 4. **Echo-Test:** Speaker-Ton abspielen, parallel Mic streamen -> Echo im Stream gedämpft (AEC).
 5. **Two-Way:** Frigate/go2rtc Backchannel (PCMA) -> Ton auf Speaker.
+
+## Per-Stream-Schalter & OTA-Workflow
+
+Drei Switches im Web-UI (Port 80): **Video Stream**, **Mic Stream**, **Speaker** (default ON,
+restoren den letzten Zustand). Damit lässt sich die CPU-Last einzeln reduzieren.
+
+**Wichtig (OTA):** Der OTA-Flash-Erase hängt, solange Kamera (H.264/ISP) + Audio-Stack laufen.
+Deshalb vor jedem OTA:
+
+1. "Video Stream" + "Mic Stream" ausschalten.
+2. `esphome upload p4_stream.yaml --device 192.168.178.196` -> der Erase läuft durch.
+3. Beide wieder einschalten.
+
+Alternativ: **"Restart in Safe Mode"**-Button (bootet nur WiFi + API + OTA, kein p4_rtsp) -> OTA dort.
+
+**Rollback ist deaktiviert** (`esp32.framework.advanced.enable_ota_rollback: false`): Der
+`esp_ota_mark_app_valid_cancel_rollback()`-Flash-Write schlägt unter Kamera/Audio-Last fehl,
+der Bootloader hätte sonst jede OTA-Firmware nach dem ersten Reset zurückgerollt.
 
 ## Tuning-Knobs
 
@@ -68,5 +86,5 @@ Gerät: `192.168.178.196` (RTSP 554, Web 80, API/OTA 3232).
 ## Bekannte offene Punkte
 
 - Speaker verzerrt ab ~75% Lautstärke (altes Problem): im neuen Stack über `master_volume`/Codec-Gain steuern; nicht getestet.
-- OTA bei ~1 MB Image weiterhin fragil -> USB-Flash.
+- OTA: Erst die Stream-Switches (Video+Mic) ausschalten oder Safe-Mode-Button nutzen (siehe oben) — dann funktioniert OTA auch remote. Rollback ist bewusst deaktiviert.
 - go2rtc konsumiert L16 als `s16be` nativ; für WebRTC-Browser-Audio ggf. FFmpeg-Transcode zu opus nötig (siehe Kommentar in `go2rtc.yaml`).

@@ -1,12 +1,12 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import button, microphone, speaker
+from esphome.components import button, microphone, speaker, switch
 from esphome.components.esp32 import add_idf_sdkconfig_option
 from esphome.const import CONF_ID
 
 DEPENDENCIES = ["network"]
 
-AUTO_LOAD = ["button"]
+AUTO_LOAD = ["button", "switch"]
 
 CONF_PORT = "port"
 CONF_VIDEO = "video"
@@ -26,10 +26,17 @@ CONF_SPEAKER = "speaker"
 CONF_SAMPLE_RATE = "sample_rate"
 CONF_CHANNELS = "channels"
 CONF_TEST_TONE = "test_tone"
+CONF_STREAMS = "streams"
+CONF_VIDEO_STREAM = "video"
+CONF_MIC_STREAM = "mic"
+CONF_SPEAKER_STREAM = "speaker"
 
 p4_rtsp_ns = cg.esphome_ns.namespace("p4_rtsp")
 P4RtspStream = p4_rtsp_ns.class_("P4RtspStream", cg.Component)
 TestToneButton = p4_rtsp_ns.class_("TestToneButton", button.Button, cg.Component)
+StreamSwitch = p4_rtsp_ns.class_("StreamSwitch", switch.Switch, cg.Component)
+
+STREAM_KINDS = {CONF_VIDEO_STREAM: 0, CONF_MIC_STREAM: 1, CONF_SPEAKER_STREAM: 2}
 
 RESOLUTIONS = {
     "320x240": (320, 240),
@@ -66,6 +73,20 @@ AUDIO_SCHEMA = cv.Schema(
     }
 )
 
+STREAMS_SCHEMA = cv.Schema(
+    {
+        cv.Optional(CONF_VIDEO_STREAM): switch.switch_schema(
+            StreamSwitch, default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+        cv.Optional(CONF_MIC_STREAM): switch.switch_schema(
+            StreamSwitch, default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+        cv.Optional(CONF_SPEAKER_STREAM): switch.switch_schema(
+            StreamSwitch, default_restore_mode="RESTORE_DEFAULT_ON"
+        ),
+    }
+)
+
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
@@ -73,6 +94,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_PORT, default=554): cv.int_range(min=1, max=65535),
             cv.Optional(CONF_VIDEO): VIDEO_SCHEMA,
             cv.Optional(CONF_AUDIO): AUDIO_SCHEMA,
+            cv.Optional(CONF_STREAMS): STREAMS_SCHEMA,
         }
     ),
     cv.has_at_least_one_key(CONF_VIDEO, CONF_AUDIO),
@@ -138,3 +160,16 @@ async def to_code(config):
             tone = cg.new_Pvariable(tone_cfg[CONF_ID])
             cg.add(tone.set_stream(var))
             await button.register_button(tone, tone_cfg)
+
+    if CONF_STREAMS in config:
+        for kind, conf_key in (
+            (CONF_VIDEO_STREAM, CONF_VIDEO_STREAM),
+            (CONF_MIC_STREAM, CONF_MIC_STREAM),
+            (CONF_SPEAKER_STREAM, CONF_SPEAKER_STREAM),
+        ):
+            if conf_key in config[CONF_STREAMS]:
+                scfg = config[CONF_STREAMS][conf_key]
+                sw = cg.new_Pvariable(scfg[CONF_ID])
+                cg.add(sw.set_stream(var))
+                cg.add(sw.set_kind(STREAM_KINDS[kind]))
+                await switch.register_switch(sw, scfg)
