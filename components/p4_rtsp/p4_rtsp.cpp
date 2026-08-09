@@ -151,25 +151,38 @@ void P4RtspStream::play_test_tone() {
     ESP_LOGE(TAG, "no speaker configured");
     return;
   }
-  // ~250 ms 1 kHz sine with a fast decay → short audible click.
-  const float freq_hz = 1000.0f;
-  const float duration_s = 0.25f;
-  size_t n = static_cast<size_t>(static_cast<float>(this->audio_sample_rate_) *
-                                 duration_s);
-  if (n == 0) {
-    return;
+  // "Ding-Dong" chime, ~3 s total. Each note is a bell-like decaying tone with
+  // a few inharmonic partials instead of a plain sine.
+  const float sample_rate = static_cast<float>(this->audio_sample_rate_);
+  std::vector<int16_t> samples;
+  samples.reserve(static_cast<size_t>(sample_rate * 3.1f));
+
+  const auto add_bell = [&](float freq_hz, float duration_s, float tau_s,
+                            float amp) {
+    size_t n = static_cast<size_t>(sample_rate * duration_s);
+    for (size_t i = 0; i < n; i++) {
+      float t = static_cast<float>(i) / sample_rate;
+      float env = std::exp(-t / tau_s);
+      float s = std::sin(2.0f * M_PI * freq_hz * t);
+      s += 0.28f * std::sin(2.0f * M_PI * freq_hz * 2.0f * t);
+      s += 0.12f * std::sin(2.0f * M_PI * freq_hz * 2.74f * t);
+      s += 0.06f * std::sin(2.0f * M_PI * freq_hz * 4.0f * t);
+      samples.push_back(static_cast<int16_t>(env * s * amp));
+    }
+  };
+
+  add_bell(880.0f, 0.9f, 0.20f, 11000.0f);  // "Ding" (A5)
+  size_t silence = static_cast<size_t>(sample_rate * 0.2f);
+  for (size_t i = 0; i < silence; i++) {
+    samples.push_back(0);
   }
-  std::vector<int16_t> samples(n);
-  for (size_t i = 0; i < n; i++) {
-    float t =
-        static_cast<float>(i) / static_cast<float>(this->audio_sample_rate_);
-    float env = 1.0f - (t / duration_s);
-    samples[i] = static_cast<int16_t>(env * 12000.0f *
-                                      std::sin(2.0f * M_PI * freq_hz * t));
-  }
+  add_bell(587.33f, 1.9f, 0.45f, 10000.0f);  // "Dong" (D5)
+
   this->speaker_->play(reinterpret_cast<const uint8_t *>(samples.data()),
                        samples.size() * 2);
-  ESP_LOGI(TAG, "played test tone: %u samples", static_cast<unsigned>(n));
+  ESP_LOGI(TAG, "played ding-dong: %u samples (%.2f s)",
+           static_cast<unsigned>(samples.size()),
+           static_cast<float>(samples.size()) / sample_rate);
 }
 
 bool P4RtspStream::has_active_stream() const {
