@@ -194,6 +194,30 @@ sensor:
     unit_of_measurement: "%"
     entity_category: "diagnostic"
 
+  # Auslastung: freier Heap, größter freier Block, freies PSRAM.
+  - platform: debug
+    free:
+      name: "Heap Free"
+      entity_category: "diagnostic"
+    block:
+      name: "Heap Max Block"
+      entity_category: "diagnostic"
+    min_free:
+      name: "Heap Min Free"
+      entity_category: "diagnostic"
+    fragmentation:
+      name: "Heap Fragmentation"
+      entity_category: "diagnostic"
+    psram:
+      name: "PSRAM Free"
+      entity_category: "diagnostic"
+
+  # Interne CPU-Temperatur (ESP32-P4 hat einen On-Die-Temperatursensor).
+  - platform: internal_temperature
+    name: "CPU Temperature"
+    update_interval: 15s
+    entity_category: "diagnostic"
+
 
 text_sensor:
   - platform: debug
